@@ -354,25 +354,6 @@ def build_category_profile(db: Session, user: User) -> Dict[str, float]:
     return _spread_related(raw_scores)
 
 
-def build_category_profile_for_retrieval(
-    db: Session,
-    user: User,
-    pre_cleaned_events: Optional[List[Dict[str, Any]]] = None,
-) -> Tuple[Dict[str, float], List[Dict[str, Any]]]:
-    """
-    Full scoring pipeline: fetch → bot filter → category scores.
-    Returns (category_scores, cleaned_events).
-    """
-    if pre_cleaned_events is not None:
-        cleaned = pre_cleaned_events
-    else:
-        raw = fetch_scoring_events(db, user)
-        cleaned = remove_bot_noise(raw)
-
-    scores = build_category_profile(db, user)
-    return scores, cleaned
-
-
 def resolve_retrieval_categories(
     sorted_cats: List[Tuple[str, float]],
     dominance_ratio: float = CATEGORY_DOMINANCE_RATIO,
@@ -552,8 +533,27 @@ def build_category_profile_for_retrieval(
     pre_cleaned_events: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[Dict[str, float], List[Dict[str, Any]]]:
     """
-    Full scoring pipeline: fetch → bot filter → category scores.
+    Retrieval/reasoning-path scoring: fetch → bot filter → category scores.
     Returns (category_scores, cleaned_events).
+
+    Intentionally distinct from build_category_profile() above:
+    - build_category_profile() is the richer profile used for catalog sort
+      bias (routers/products.py via interest_profile.get_dominant_categories).
+      It re-queries reviews and dismissals from the DB and applies
+      confidence-weighting/search-alignment per product, because catalog
+      sort runs once per page load and can afford the extra DB work.
+    - build_category_profile_for_retrieval() (this function) is the fast
+      path used by services/retrieval.py and services/reasoning.py. It
+      scores directly off the already-fetched, already-bot-filtered event
+      dicts (pre_cleaned_events) instead of re-querying the DB, since it
+      runs inside the LangGraph recommendation pipeline where low latency
+      matters and events/bot-filtering were already computed upstream in
+      analyze_activity(). It does not separately re-pull review signals.
+
+    If you need review-signal-aware scores in a retrieval/reasoning
+    context, call build_category_profile(db, user) directly instead of
+    adding a second copy of this function — there is now exactly one
+    implementation per path.
     """
     if pre_cleaned_events is not None:
         cleaned = pre_cleaned_events

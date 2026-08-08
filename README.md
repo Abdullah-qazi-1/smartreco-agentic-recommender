@@ -159,7 +159,7 @@ Every Mesh-dependent path degrades gracefully instead of crashing: narrative gen
 
 ## 📌 Known Limitations
 
-1. **Dual Profiling Paths**: `scoring_engine.py` drives recommendation retrieval/reasoning; `interest_profile.py` still computes review, dismissal, and catalog sort bias separately.
+1. **Two Category-Profile Builders (by design, now documented)**: `services/scoring_engine.py` exposes two profile builders on purpose — `build_category_profile()` (re-queries reviews/dismissals from the DB, used for catalog sort bias in `routers/products.py`) and `build_category_profile_for_retrieval()` (scores off already-fetched, already-bot-filtered events for low-latency use inside the LangGraph pipeline, used by `services/retrieval.py` and `services/reasoning.py`). An earlier duplicate, dead definition of `build_category_profile_for_retrieval()` (shadowed and never actually called) has been removed; see the docstring on that function for the rationale behind keeping two paths.
 2. **Transient Reasoning Cards**: Reasoning summaries are recomputed dynamically per request for AI Insights cards and are not stored permanently in the `Recommendation` table.
 
 ---
