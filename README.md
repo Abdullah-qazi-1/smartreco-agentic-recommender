@@ -1,128 +1,33 @@
 # SmartReco — Behavioral AI Recommendation Agent
 
-SmartReco is an agentic e-learning recommendation platform powered by FastAPI, ChromaDB, LangGraph, and the Mesh API. It tracks learner behavior in real time, evaluates interest signals using a mathematical scoring engine, retrieves category-constrained catalog embeddings via RAG, and orchestrates an autonomous LangGraph workflow to generate personalized, catalog-grounded narratives and daily proactive digests.
-
----
-
-## 🌟 Overview
-
-SmartReco transforms static course catalogs into an adaptive learning experience:
-
-1. **Behavioral Ingest**: As learners browse courses, view details, search topics, or enroll/dismiss recommendations, client-side trackers capture granular events (views, dwell time, searches, clicks, enrollments, dismissals, scroll depth).
-2. **Scoring & Triggering**: A spec-aligned scoring engine computes exponential recency decay, dwell-time multipliers, frequency boosts, and explicit interest weights. Trigger logic evaluates whether new behavioral signal justifies an LLM invocation.
-3. **LangGraph Agent Workflow**: When triggered, a multi-node LangGraph `StateGraph` pipeline (`analyze_activity` ➔ `decide_retrieval` ➔ `retrieve` ➔ `evaluate_retrieval_quality` ➔ `refine` ➔ `generate`) retrieves category and level-aware candidates from ChromaDB, re-ranks products, and verifies narrative grounding.
-4. **LLM Narrative Generation**: SmartReco calls the Mesh API (OpenAI-compatible LLM gateway) to produce warm, persuasive, strictly catalog-grounded course recommendation prose for the learner dashboard and AI Insights page.
-5. **Proactive Delivery**: An integrated APScheduler background service dispatches formatted daily learning digests via SMTP Email and/or Telegram Bot HTTP API to active learners.
-
----
-
-## 🏗️ Architecture
-
-SmartReco follows a decoupled, service-oriented architecture designed for low-latency web interactions and transparent agent observability:
+SmartReco is an agentic e-learning recommendation platform powered by FastAPI, ChromaDB, LangGraph, and the Mesh API. It tracks learner behavior in real time, scores interest signals, retrieves catalog-grounded candidates via RAG, and runs a LangGraph agent to generate personalized, persuasive recommendations — refreshed automatically and delivered proactively.
 
 ![SmartReco Architecture](./assets/architecture-diagram.png)
 
-*The diagram above shows two paths through the same LangGraph agent: a live request flow triggered by dashboard visits, and a scheduled proactive digest flow triggered daily by APScheduler.*
+---
 
-<details>
-<summary>📊 Detailed workflow diagram (Mermaid)</summary>
+## 🌟 How It Works
 
-```mermaid
-flowchart TD
-    subgraph Client ["Frontend Client"]
-        UI["Jinja2 Templates & UI"]
-        Tracker["static/js/tracker.js"]
-    end
+1. **Behavioral Ingest** — client-side tracker (`static/js/tracker.js`) captures views, dwell time, searches, clicks, enrollments, dismissals, and scroll depth; batches and flushes non-blocking via `POST /api/track`.
+2. **Scoring & Triggering** — `services/scoring_engine.py` scores interest per category (recency decay, dwell multipliers, frequency boost). `services/trigger.py` only fires the agent once genuine new signal (5+ events) plus a cooldown window has passed — no LLM call on every click.
+3. **LangGraph Agent** (`services/agent_graph.py`) — `analyze_activity → decide_retrieval → retrieve → evaluate_retrieval_quality → refine → generate`. Retrieves category/level-aware candidates from ChromaDB, re-ranks, and generates a grounded narrative.
+4. **LLM Narrative** — every LLM/embedding call goes through the **Mesh API** (OpenAI-compatible gateway); output is validated against real catalog titles before being shown (`validate_narrative_grounding`).
+5. **Proactive Delivery** — APScheduler dispatches daily digests via SMTP Email / Telegram at a scheduled hour (not a manual button).
 
-    subgraph API ["FastAPI Application"]
-        EventsAPI["POST /api/track"]
-        RecAPI["GET /api/recommendations"]
-        AdminAPI["POST /api/admin/run-digest"]
-    end
-
-    subgraph Data ["Data & Vector Layer"]
-        DB[(SQLite DB)]
-        Chroma[(ChromaDB Vector Store)]
-    end
-
-    subgraph Agent ["LangGraph Agent Orchestrator"]
-        N1["1. analyze_activity"]
-        N2["2. decide_retrieval"]
-        N3["3. retrieve"]
-        N4["4. evaluate_retrieval_quality"]
-        N5["5. refine (on low confidence)"]
-        N6["6. generate"]
-    end
-
-    subgraph Services ["External & Proactive Services"]
-        Mesh["Mesh API (LLM Gateway)"]
-        LangSmith["LangSmith Observability"]
-        Scheduler["APScheduler (Daily Digest)"]
-        Delivery["SMTP Email / Telegram Bot API"]
-    end
-
-    UI --> Tracker
-    Tracker -->|"Bulk Events"| EventsAPI
-    EventsAPI --> DB
-
-    RecAPI --> N1
-    N1 --> N2
-    N2 -->|"Trigger Met"| N3
-    N3 <-->|"Hybrid RAG Search"| Chroma
-    N3 --> N4
-    N4 -->|"Low Score Delta"| N5
-    N5 --> N3
-    N4 -->|"Quality OK"| N6
-    N6 -->|"Prompt and Grounding Check"| Mesh
-    N6 --> LangSmith
-    N6 --> DB
-
-    Scheduler -->|"Cron Job Daily 16:00"| AdminAPI
-    AdminAPI --> Delivery
-```
-
-</details>
-
-### Dual-Write Pattern (SQL + Vector DB)
-
-SmartReco implements a **Dual-Write Pattern** across SQLite and ChromaDB for all course catalog operations (`create_product`, `update_product`, `delete_product` in `services/product_service.py`):
-- **SQLite**: Serves as the primary relational database, storing structured product metadata (title, category, level, price, rating, instructor IDs, enrollments).
-- **ChromaDB**: Acts as the vector database, storing high-dimensional embeddings (generated via the **Mesh API** `text-embedding-3-small` model) of combined product titles, descriptions, and skill tags.
-
-**Why Dual-Write Exists**: Standard relational databases excel at exact filtering (category, price range, enrollment IDs) but fail at semantic context matching. ChromaDB enables semantic similarity search but lacks relational transaction capabilities. Synchronizing both on every CRUD operation guarantees instant vector search retrieval without sacrificing relational data integrity.
-
-**Self-Healing Reconciliation**: The try/except around each Chroma upsert (see the Resilience section below) only *catches and logs* a failed sync — it doesn't fix it. `services/product_service.py :: reconcile_vector_store()` is the piece that actually repairs it: it finds every product whose most recent `ChromaSyncLog` entry is `status="failed"` and retries the upsert. This runs automatically every hour via APScheduler (`services/scheduler.py :: run_vector_reconcile_job`, job id `vector_reconcile_job`, also fired once ~1 minute after boot) and can be triggered on demand at **`POST /api/admin/reconcile-vectors`**. A product that failed to sync during a transient Mesh outage is not permanently invisible to semantic search — it self-heals on the next cycle, and `tests/smoke_test.py` Section [9] proves this end-to-end (breaks a sync, then asserts the reconcile job repairs it).
+### Dual-Write (SQL + Vector DB)
+Every product create/update/delete writes to **SQLite** (source of truth) and **ChromaDB** (embeddings via Mesh) together, logged in `ChromaSyncLog`. If the Chroma half fails (e.g. Mesh outage), the SQL row is still committed — nothing is lost, it's just temporarily missing from semantic search until an **hourly self-healing job** (`reconcile_vector_store()`, also triggerable at `POST /api/admin/reconcile-vectors`) retries and repairs it. Covered end-to-end by `tests/smoke_test.py` Section [9].
 
 ---
 
 ## ✅ Features Implemented
 
-### a) Core Platform
-- [x] **Authentication & Sessions**: Registration, login, password hashing (`bcrypt`), and session-based auth.
-- [x] **Dual-Mode User Support**: Unified user model supporting Student mode and Instructor mode (`active_mode`).
-- [x] **Course Catalog & Management**: Full catalog browsing, category filtering, search, and instructor course creation/deletion.
-- [x] **Dual-Write Synchronization**: Instant SQL and ChromaDB vector synchronization on product CRUD operations.
+**Core Platform** — email/password auth (bcrypt), session-based login, dual-mode users (student/instructor), full catalog CRUD, dual-write sync.
 
-### b) Behavioral Tracking
-- [x] **Client-Side Event Tracker**: `static/js/tracker.js` captures `view`, `time_spent` (dwell time), `search`, `click`, `enroll`, `dismiss`, and `scroll_depth`.
-- [x] **Debounce & Batching**: `static/js/debounce.js` debounces search queries and batches event payloads to `POST /api/track`.
-- [x] **Bot Noise Filter**: `remove_bot_noise()` drops rapid-fire duplicate events (< 0.3s gap).
-- [x] **Tracking Preferences**: Opt-in/opt-out tracking toggle persisted in `UserProfile` (`agent_tracking_enabled`).
-- [x] **Scroll Depth Tracking**: `throttle()`-wrapped scroll listener in `tracker.js` fires `scroll_depth` events at 25/50/75/100% page milestones, flushed via the same batched/non-blocking pipeline as all other events.
+**Behavioral Tracking** — batched + debounced client tracker, `sendBeacon` flush on tab close, bot-noise filter (<0.3s duplicate drop), scroll-depth milestones, opt-in/out tracking preference.
 
-### c) Agentic Recommendation Engine
-- [x] **Multi-Factor Scoring Engine**: Mathematical event scoring with exponential recency decay, dwell-time multipliers, frequency log-dampening, and explicit interest boosting.
-- [x] **Hybrid RAG Retrieval**: Category-constrained semantic search in `services/retrieval.py` with level preferences, instructor-aware branches, and cross-field search-intent bridge queries.
-- [x] **Trigger Logic**: `should_regenerate()` gating recommendation generation on genuine signal event thresholds (default: 5 events) plus a cooldown window.
-- [x] **Search Recommendation Cache**: In-memory caching for query recommendations (`SEARCH_REC_CACHE_TTL_SECONDS = 86400`).
+**Agentic Recommendation Engine** — multi-factor scoring engine, hybrid RAG retrieval (category + level aware), trigger-gated generation (5-event threshold + cooldown), 24h search-recommendation cache.
 
-### d) Bonus Features (Level 6)
-- [x] **LangGraph Structured Agent Workflow**: Refactored agent pipeline into explicit `StateGraph` in `services/agent_graph.py` (`analyze` ➔ `decide` ➔ `retrieve` ➔ `evaluate` ➔ `refine` ➔ `generate`).
-- [x] **Scheduled Proactive Delivery**: `APScheduler` `BackgroundScheduler` in `services/scheduler.py` dispatching daily digests via **SMTP Email** and **Telegram Bot HTTP API**, plus manual trigger `POST /api/admin/run-digest`.
-- [x] **Scheduled Vector-Store Self-Healing**: same `BackgroundScheduler` also runs `run_vector_reconcile_job` hourly, retrying any product whose Chroma/Mesh dual-write previously failed — plus manual trigger `POST /api/admin/reconcile-vectors`.
-- [x] **LangSmith Observability**: LangChain/LangSmith tracing integration via `@traceable` decorator on LLM narrative generation.
-- [x] **Retrieval Re-Ranking**: Multi-factor re-ranking (`_rerank_search_products`) applied across primary recommendation candidate sets.
-- [x] **LLM Grounding & Hallucination Guard**: Post-generation title validation (`validate_narrative_grounding`) enforcing strict course title grounding with automatic single retry and safe fallback.
+**Bonus (Level 6)** — LangGraph structured agent ✅ · scheduled daily digest via real cron (APScheduler, email + Telegram) ✅ · scheduled vector self-healing ✅ · LangSmith tracing ✅ · retrieval re-ranking ✅ · LLM grounding/hallucination guard ✅.
 
 ---
 
@@ -130,65 +35,16 @@ SmartReco implements a **Dual-Write Pattern** across SQLite and ChromaDB for all
 
 ```
 smartreco/
-├── database/                   # Database configuration and ORM models
-│   ├── chroma_client.py        # ChromaDB vector store initialization & Mesh-backed embedding search
-│   ├── db.py                   # SQLAlchemy engine, session maker, migration runner
-│   └── models.py               # ORM schemas (User, UserProfile, Product, Event, Recommendation, Review)
-├── routers/                    # FastAPI endpoint routers
-│   ├── auth.py                 # User authentication, registration, login/logout handlers
-│   ├── events.py               # Bulk event tracking ingest (POST /api/track)
-│   ├── monitoring.py           # /health, /metrics, /api/analytics, and POST /api/admin/run-digest
-│   ├── products.py             # Catalog browsing, search (GET /api/search), product CRUD
-│   └── recommendations.py      # Recommendation retrieval, AI Insights page, force refresh
-├── services/                   # Core business logic & AI services
-│   ├── activity.py             # User activity feed formatting & event history labels
-│   ├── agent.py                # Agent orchestrator entry point delegating to LangGraph workflow
-│   ├── agent_graph.py          # LangGraph StateGraph pipeline (analyze, decide, retrieve, evaluate, refine, generate)
-│   ├── analytics.py            # Admin analytics computation & recommendation conversion metrics
-│   ├── category_taxonomy.py    # Category mapping weights, topic mappings, query category inference
-│   ├── interest_profile.py     # Interest profile builder, decay factor computation, catalog bias
-│   ├── llm_client.py           # Mesh API client wrapper, LangSmith @traceable, grounding validation
-│   ├── metrics.py              # In-memory operational metrics collector (LLM calls, trigger rates)
-│   ├── product_service.py      # Dual-write product operations (SQLite + ChromaDB sync)
-│   ├── reasoning.py            # AI Insights structured reasoning cards builder
-│   ├── retrieval.py            # RAG semantic retrieval, secondary similarity score check, re-ranking, cold-start
-│   ├── scheduler.py            # APScheduler daily digest service (SMTP Email & Telegram API dispatch)
-│   ├── scoring_engine.py       # Spec scoring formulas (recency decay, time multiplier, dominance rule)
-│   ├── scoring_weights.py      # Centralized scoring constants and threshold definitions
-│   ├── tracking_prefs.py       # Agent tracking preference reader/writer
-│   └── trigger.py              # Trigger evaluation logic (count_new_signal_events, should_regenerate)
-├── static/                     # Static frontend assets
-│   ├── css/                    # Custom CSS files
-│   ├── js/                     # Frontend JavaScript modules
-│   │   ├── debounce.js         # Input debouncing & scroll-depth throttle helper
-│   │   └── tracker.js          # Client event tracking engine (views, dwell time, clicks, enrollments, scroll)
-│   ├── script.js               # Dashboard UI interaction scripts
-│   └── styles.css              # Main application stylesheet
-├── templates/                  # Jinja2 HTML templates
-│   ├── admin.html              # Admin analytics dashboard template
-│   ├── ai-insights.html        # AI Insights tab with key factor cards & search history sidebar
-│   ├── base.html                # Base layout template with navigation
-│   ├── catalog.html            # Course catalog template with real-time search & filters
-│   ├── course-details.html     # Product detail page template with reviews & enroll tracking
-│   ├── dashboard.html          # Main student dashboard with active recommendations
-│   ├── index.html              # Landing page template
-│   ├── my-learning.html        # Enrolled courses page
-│   ├── onboarding.html         # User onboarding interests & experience level setup
-│   ├── profile.html            # User profile page template
-│   └── settings.html           # Settings template with tracking toggle switch
-├── scripts/                    # Utility scripts
-│   └── eval_recommendations.py # Recommendation quality evaluation script for synthetic user profiles
-├── assets/                     # Static images used in documentation
-│   └── architecture-diagram.png # High-level architecture diagram (see Architecture section)
-├── tests/
-│   └── smoke_test.py           # Standalone assertion-based smoke test suite
-├── create_admin.py             # Script to initialize admin user account
-├── seed_data.py                # Database + vector store seeding script (see note in Setup section)
-├── resync_chroma.py            # Re-syncs ChromaDB from current SQLite catalog state
-├── main.py                     # FastAPI application entry point & scheduler lifecycle handlers
-├── requirements.txt            # Python package dependencies (pinned)
-├── .env.example                # Template for environment configuration
-└── README.md                   # Project documentation
+├── database/       # SQLAlchemy models, engine/session, ChromaDB client
+├── routers/        # auth, products, events, recommendations, monitoring
+├── services/       # scoring, trigger, retrieval, agent_graph, llm_client,
+│                    product_service (dual-write), scheduler, rate_limit, ...
+├── static/js/      # tracker.js (event batching), debounce.js
+├── templates/      # Jinja2 pages (dashboard, catalog, admin, ai-insights, ...)
+├── tests/          # smoke_test.py
+├── scripts/        # eval_recommendations.py
+├── main.py, create_admin.py, seed_data.py, resync_chroma.py
+└── requirements.txt, .env.example
 ```
 
 ---
@@ -210,89 +66,20 @@ smartreco/
 
 ## ⚙️ Setup & Running Locally
 
-### 1. Clone & Environment Setup
 ```bash
-# Clone the repository
 git clone https://github.com/Abdullah-qazi-1/smartreco-agentic-recommender.git
 cd smartreco-agentic-recommender
-
-# Create and activate a virtual environment
-python -m venv venv
-# On Windows:
-venv\Scripts\activate
-# On Linux/macOS:
-source venv/bin/activate
-
-# Install dependencies
+python -m venv venv && source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
+
+cp .env.example .env   # then fill in SESSION_SECRET + MESH_API_KEY (required)
+
+uvicorn main:app --reload --port 8000   # → http://localhost:8000
 ```
 
-### 2. Configure Environment Variables
-Copy `.env.example` to `.env`:
-```bash
-cp .env.example .env
-```
+> **Note:** `chroma_db/` and `smartreco.db` are shipped **pre-built** (seeded catalog + embeddings) to avoid re-running Mesh embedding calls on every clone. If both are already present, skip seeding entirely. Only run `python seed_data.py && python create_admin.py` if starting from a genuinely empty database. If SQLite/Chroma ever drift, resync with `python resync_chroma.py`.
 
-Set `SESSION_SECRET` and your `MESH_API_KEY` — all LLM and embedding calls route exclusively through Mesh (mandatory for this submission, no other provider is used):
-
-```env
-SESSION_SECRET=dev-secret-change-me-in-production
-
-MESH_API_KEY=rsk_your_mesh_api_key_here
-MESH_MODEL=openai/gpt-4o
-MESH_EMBED_MODEL=openai/text-embedding-3-small
-MESH_BASE_URL=https://api.meshapi.ai/v1
-
-# LangSmith Observability (Optional)
-LANGCHAIN_TRACING_V2=true
-LANGCHAIN_API_KEY=your_langsmith_api_key_here
-LANGCHAIN_PROJECT=smartreco
-```
-
-### 3. Database & Vector Store
-
-> **⚠️ Cost note — read before running seed scripts:** This repository already ships with a **pre-built `chroma_db/` vector store and a matching `smartreco.db`** (seeded catalog + embeddings). This is intentional: it avoids re-triggering Mesh API embedding calls for the full catalog every time the project is cloned or deployed. **If both `chroma_db/` and `smartreco.db` are already present in your checkout, skip the seeding commands below entirely and go straight to Step 4.**
-
-Only run seeding if you are starting from a genuinely empty database (no `smartreco.db`, no `chroma_db/`), or if you intentionally want to rebuild the catalog from scratch:
-```bash
-# Seeds the product catalog into SQLite AND embeds it into ChromaDB via Mesh
-# (this calls the Mesh embeddings endpoint once per product — only run when needed)
-python seed_data.py
-
-# Create default admin user (admin@smartreco.ai / admin123)
-python create_admin.py
-```
-
-If SQLite and Chroma ever drift out of sync (e.g. you edited products directly in the DB), resync just the vector store without touching SQLite:
-```bash
-python resync_chroma.py
-```
-
-### 4. Run Application Server
-```bash
-uvicorn main:app --reload --port 8000
-```
-Access the application in your browser at: `http://localhost:8000`
-
-### Environment Variables Reference
-
-| Variable Name | Required? | Purpose |
-| :--- | :---: | :--- |
-| `SESSION_SECRET` | **Yes** | Secret key for signing session cookies |
-| `MESH_API_KEY` | **Yes** | Mesh API Key (starts with `rsk_`) — used for both chat completions and embeddings |
-| `MESH_MODEL` | Optional | Mesh LLM model identifier (default: `openai/gpt-4o`) |
-| `MESH_EMBED_MODEL` | Optional | Mesh embedding model identifier (default: `openai/text-embedding-3-small`) |
-| `MESH_BASE_URL` | Optional | Mesh API endpoint URL (default: `https://api.meshapi.ai/v1`) |
-| `LANGCHAIN_TRACING_V2`| Optional | Enable LangSmith tracing (`true`/`false`) |
-| `LANGCHAIN_API_KEY` | Optional | LangSmith API Key for tracing dashboard |
-| `LANGCHAIN_PROJECT` | Optional | LangSmith project name (default: `smartreco`) |
-| `DIGEST_SCHEDULE_HOUR`| Optional | Daily digest trigger hour in UTC (default: `16`) |
-| `SMTP_HOST` | Optional | SMTP host for email digest delivery |
-| `SMTP_PORT` | Optional | SMTP port (default: `587`) |
-| `SMTP_USER` | Optional | SMTP authentication username |
-| `SMTP_PASS` | Optional | SMTP authentication password |
-| `TELEGRAM_BOT_TOKEN` | Optional | Telegram Bot API token for digest messaging |
-| `TELEGRAM_CHAT_ID` | Optional | Target Telegram chat ID for digest notifications |
+**Required env vars:** `SESSION_SECRET`, `MESH_API_KEY` (+ optional `MESH_MODEL`, `MESH_EMBED_MODEL`, `MESH_BASE_URL`). **Optional:** LangSmith (`LANGCHAIN_*`), digest delivery (`SMTP_*`, `TELEGRAM_*`), and the new security knobs below. Full list with defaults is in `.env.example`.
 
 ---
 
@@ -312,72 +99,25 @@ SmartReco calculates per-category interest scores using a composite scoring form
 - **Explicit Interest Boost**: `1.5×` multiplier for categories declared during onboarding.
 - **Conflicting Interest 3× Dominance Rule**: If the top category score is $> 3\times$ the second category score, retrieval isolates the dominant category. Otherwise, the engine blends candidates from the top 2 categories.
 
-### 2. Trigger & Caching Logic (`services/trigger.py`)
-To prevent unnecessary LLM costs, recommendations are **not** re-generated on every user click.
-- `should_regenerate(db, user)` checks if `new_signal_events >= 5` since the last generated recommendation, and enforces a minimum cooldown window between runs.
-- Search-based course recommendations use an in-memory cache keyed by query, user tags, and limit with a 24-hour TTL.
+### 2. Trigger & Caching (`services/trigger.py`)
+`should_regenerate(db, user)` only fires the agent once 5+ new signal events have accumulated since the last recommendation, plus a cooldown window — no LLM call per click. Search recommendations are cached in-memory (24h TTL).
 
-### 3. LangGraph Node Sequence (`services/agent_graph.py`)
-
+### 3. LangGraph Nodes (`services/agent_graph.py`)
 ```
-[START] ➔ analyze_activity ➔ decide_retrieval ➔ retrieve ➔ evaluate_retrieval_quality ➔ refine ➔ generate ➔ [END]
+[START] → analyze_activity → decide_retrieval → retrieve → evaluate_retrieval_quality → refine → generate → [END]
 ```
-
-- **`analyze_activity`**: Loads agent-eligible events from SQLite and applies `remove_bot_noise()`.
-- **`decide_retrieval`**: Gates execution on `agent_tracking_enabled` and `should_regenerate()`.
-- **`retrieve`**: Calls `get_recommendation_candidates()`, conducting category-constrained RAG vector search in ChromaDB.
-- **`evaluate_retrieval_quality`**: Evaluates top candidate similarity score against best score in catalog (~0.15 score delta). If quality is low and refinement has not occurred, routes to `refine`.
-- **`refine`**: Widens query constraints (relaxing hard level filters and expanding top-k pool) and re-evaluates retrieval once.
-- **`generate`**: Invokes `generate_narrative()` via `services/llm_client.py`, validates title grounding, formats narrative blocks (`main` and `search_intent`), and saves a `Recommendation` ORM row.
+`retrieve` does category-constrained RAG search in ChromaDB; `evaluate_retrieval_quality` routes to `refine` (widened filters, re-search once) if the top match is weak; `generate` calls Mesh, validates title grounding, and saves the `Recommendation`.
 
 ---
 
-## 🧪 Bonus Features — How to Test Them
-
-### 1. Testing Scheduled Daily Digest (Manual Endpoint)
-Trigger the daily digest batch job manually without waiting for the scheduled cron time:
+## 🧪 Testing
 
 ```bash
-curl -X POST http://localhost:8000/api/admin/run-digest \
-     -H "Cookie: session=YOUR_SESSION_COOKIE"
+python tests/smoke_test.py              # full backend suite, no live Mesh key needed — 25 assertions
+python scripts/eval_recommendations.py  # recommendation quality: single-category, mixed-signal, cold-start profiles
 ```
-**Expected Response**:
-```json
-{
-  "status": "completed",
-  "summary": {
-    "processed_users": 1,
-    "emails_sent": 0,
-    "telegrams_sent": 0,
-    "errors": []
-  }
-}
-```
-*(If `SMTP_*` or `TELEGRAM_BOT_TOKEN` are populated in `.env`, email/telegram dispatches will occur automatically).*
 
-### 2. Verifying LangSmith Tracing
-1. Set `LANGCHAIN_TRACING_V2=true`, `LANGCHAIN_API_KEY=your_key`, `LANGCHAIN_PROJECT=smartreco` in `.env`.
-2. Trigger a recommendation refresh on the UI or via `POST /api/recommendations/refresh`.
-3. Log into your [LangSmith Dashboard](https://smith.langchain.com/).
-4. Navigate to the `smartreco` project to inspect the full trace execution graph showing the `generate_narrative` step, input prompt, candidate JSON, and output text.
-
-### 3. Running the Evaluation Script
-Execute the recommendation precision and grounding evaluation suite:
-
-```bash
-python scripts/eval_recommendations.py
-```
-**What the output verifies**:
-- **Profile A (Single Category)**: Tests retrieval precision and narrative generation for a user with concentrated Data Science views.
-- **Profile B (Mixed Signals)**: Tests multi-category handling and search-intent bridge creation across Web Development and Cloud.
-- **Profile C (Cold-Start)**: Verifies safe fallback behavior to trending catalog courses when 0 behavioral events exist.
-
-### 4. Running the Smoke Test Suite
-Runs standalone without requiring a live Mesh API key (embedding/LLM calls are mocked):
-```bash
-python tests/smoke_test.py
-```
-Covers dual-write sync, event ingestion, trigger/cooldown policy, LangGraph agent run, grounding validation, and cold-start handling.
+To test the daily digest without waiting for the scheduled hour: `POST /api/admin/run-digest` (requires a real admin session — see Security section below). For LangSmith tracing, set `LANGCHAIN_TRACING_V2=true` + `LANGCHAIN_API_KEY` in `.env`, trigger a refresh, then check the `smartreco` project at [smith.langchain.com](https://smith.langchain.com/).
 
 ---
 
@@ -385,40 +125,35 @@ Covers dual-write sync, event ingestion, trigger/cooldown policy, LangGraph agen
 
 | Method | Endpoint Path | Access Level | Description |
 | :--- | :--- | :--- | :--- |
-| `POST` | `/api/track` | Public / Authenticated | Ingest bulk client behavioral events |
-| `GET` | `/api/search` | Public | Real-time catalog search with semantic re-ranking |
+| `POST` | `/api/track` | Authenticated | Ingest bulk client behavioral events |
+| `GET` | `/api/search` | Authenticated | Real-time catalog search with semantic re-ranking |
 | `GET` | `/api/recommendations` | Authenticated | Retrieve current user's active recommendation |
 | `POST` | `/api/recommendations/refresh` | Authenticated | Force-trigger recommendation pipeline |
-| `POST` | `/api/admin/run-digest` | Admin / Instructor | Manually execute proactive daily digest job |
-| `GET` | `/api/admin/analytics` | Admin / Instructor | Get full analytics summary and conversion metrics |
+| `POST` | `/api/admin/run-digest` | **Admin only** | Manually execute proactive daily digest job |
+| `GET` / `POST` | `/api/admin/analytics`, `/api/admin/reconcile-vectors` | **Admin only** | Analytics summary / manual vector self-heal |
+| `GET` | `/metrics` | **Admin only** | Operational metrics (LLM stats, trigger fire rates) |
 | `GET` | `/health` | Public | System health check (SQLite, ChromaDB, LLM provider) |
-| `GET` | `/metrics` | Public | Operational metrics (LLM stats, trigger fire rates) |
+
+---
+
+## 🔒 Security — Recent Hardening (Latest Update)
+
+A security review found and fixed the following. All 25 `smoke_test.py` assertions plus a dedicated live login-flow regression test (signup → login → wrong password → logout → re-login → rate-limit) pass after these changes — **no existing functionality was affected.**
+
+| Issue | Fix |
+| :--- | :--- |
+| **Privilege escalation**: `/metrics`, `/api/analytics`, `/api/admin/run-digest`, `/api/admin/reconcile-vectors` accepted `role=="admin"` **OR** `active_mode=="instructor"` — and any user can self-switch to instructor mode via `POST /api/switch-mode` (by design, for course-management). This let any regular user reach admin-only operations. | `routers/monitoring.py` now requires `role=="admin"` only on all four routes. Course CRUD (already correctly scoped to `instructor_id==user.id`) is untouched. |
+| **No rate-limiting on `/login` or `/signup`** — unlimited password-guessing was possible. | Added to `services/rate_limit.py`: `/login` (10 req/60s), `/signup` (5 req/60s). Normal users retrying a typo are never affected. |
+| **Rate limiter trusted `X-Forwarded-For` unconditionally** — a client-supplied header, trivially spoofable to bypass IP-based limits. | Now only trusted if `TRUST_PROXY_HEADERS=true` is explicitly set (for real deployments behind a reverse proxy); defaults to the real socket peer address. |
+| **Session cookie never expired, no `https_only` control.** | Added `SESSION_MAX_AGE_SECONDS` (default 7 days) and `SESSION_COOKIE_SECURE` env var (set `true` once deployed behind HTTPS). |
+
+New optional env vars (defaults keep local dev unchanged): `SESSION_COOKIE_SECURE`, `SESSION_MAX_AGE_SECONDS`, `TRUST_PROXY_HEADERS` — see `.env.example`.
 
 ---
 
 ## 🛡️ Resilience — What Happens Without Mesh
 
-Every Mesh-dependent code path fails **loudly into a logged fallback**, never
-silently and never with a crash. This was verified by running the app with
-`MESH_API_KEY` unset — the server still starts and every page still renders.
-
-| Dependency | Where | If Mesh is missing/unreachable |
-| --- | --- | --- |
-| **Chat completions** (narrative generation) | `services/llm_client.py :: generate_narrative()` | The whole Mesh call is wrapped in one try/except. Failure is logged (`record_llm_call(success=False)`) and a short, honest generic sentence is returned instead of a 500 — the dashboard still renders. |
-| **Embeddings** (semantic search) | `database/chroma_client.py :: embed_text()` → `services/product_service.py :: semantic_search_products_scored()` | `embed_text()` raises on failure (no fake vector). The caller catches it and falls back to `services/keyword_fallback.py` — a plain SQL keyword search with zero AI/embedding calls. |
-| **Dual-write on product create/update** | `services/product_service.py :: create_product() / update_product()` | The SQL row is committed **first**; the Chroma upsert is a separate try/except after it. On failure the product is *not* lost — it's just temporarily missing from semantic search, and the miss is recorded in `ChromaSyncLog(status="failed")` for visibility instead of failing silently. |
-| **Vector sync recovery** | `services/product_service.py :: reconcile_vector_store()` | The failure above is only *logged*, not fixed, on its own. This function actually retries it — runs hourly via `services/scheduler.py :: run_vector_reconcile_job` and on demand at `POST /api/admin/reconcile-vectors`, so a transient Mesh outage never leaves a product permanently unsearchable. |
-| **App startup** | `main.py` | Only `SESSION_SECRET` is required to boot. `MESH_API_KEY` is checked lazily, only at the point of use, never at startup. |
-
-**How to see it yourself:**
-```bash
-# Temporarily unset the key (or comment it out in .env) and run:
-MESH_API_KEY="" python tests/smoke_test.py
-```
-`tests/smoke_test.py` includes a dedicated "Mesh-down" section (see below)
-that asserts the app keeps working — narrative generation returns the
-fallback sentence, search returns real keyword-matched products, and no
-exception propagates to the caller.
+Every Mesh-dependent path degrades gracefully instead of crashing: narrative generation falls back to a short generic sentence, semantic search falls back to plain SQL keyword search, and a failed dual-write is logged (`ChromaSyncLog(status="failed")`) and self-heals hourly via `reconcile_vector_store()` rather than silently losing data. Only `SESSION_SECRET` is required at app startup — `MESH_API_KEY` is checked lazily at point of use. Verify it yourself: `MESH_API_KEY="" python tests/smoke_test.py`.
 
 ---
 

@@ -1,6 +1,7 @@
 """
 Simple in-memory rate limiter for public API endpoints.
 """
+import os
 import time
 from collections import defaultdict
 from typing import Dict, Tuple
@@ -15,15 +16,30 @@ RATE_LIMITS: Dict[str, Tuple[int, int]] = {
     "/api/recommendations": (60, 60),
     "/api/recommendations/refresh": (10, 60),
     "/api/ai/refresh": (10, 60),
+    # Auth endpoints previously had NO throttling at all, which allowed
+    # unlimited password-guessing against /login and mass account creation
+    # / email-enumeration against /signup. Limits kept generous enough that
+    # a real user retrying a mistyped password a few times is never affected.
+    "/login": (10, 60),
+    "/signup": (5, 60),
 }
 
 _buckets: Dict[str, list] = defaultdict(list)
 
+# By default we only trust the direct socket peer address (request.client.host),
+# because X-Forwarded-For is a plain client-supplied header: anyone can send a
+# fresh fake value on every request and fully bypass IP-based rate limiting.
+# Only trust X-Forwarded-For if this app is actually deployed behind a proxy
+# that sets/overwrites it (nginx, Cloudflare, etc.) — set TRUST_PROXY_HEADERS=true
+# in that environment's .env.
+_TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "false").strip().lower() == "true"
+
 
 def _client_key(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    if _TRUST_PROXY_HEADERS:
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
     if request.client:
         return request.client.host
     return "unknown"

@@ -31,10 +31,19 @@ if not _session_secret:
 app = FastAPI(title="SmartReco")
 
 app.add_middleware(GZipMiddleware, minimum_size=500)
+# https_only defaults to False so local http://localhost dev keeps working out of
+# the box. Set SESSION_COOKIE_SECURE=true in .env for any real/HTTPS deployment
+# so the session cookie is never sent over plain HTTP.
+_session_cookie_secure = os.getenv("SESSION_COOKIE_SECURE", "false").strip().lower() == "true"
+# 7-day absolute session lifetime instead of a cookie that never expires
+# (max_age=None previously meant sessions lived forever with no timeout).
+_session_max_age_seconds = int(os.getenv("SESSION_MAX_AGE_SECONDS", str(7 * 24 * 60 * 60)))
 app.add_middleware(
     SessionMiddleware,
     secret_key=_session_secret,
-    max_age=None,
+    max_age=_session_max_age_seconds,
+    same_site="lax",
+    https_only=_session_cookie_secure,
 )
 
 app.mount("/static", StaticFiles(directory="static"), name="static")

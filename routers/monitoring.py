@@ -82,12 +82,14 @@ def health_check(db: Session = Depends(get_db)):
 @router.get("/metrics")
 def operational_metrics(request: Request, db: Session = Depends(get_db)):
     """
-    Exposes basic operational metrics. Requires admin or instructor mode.
+    Exposes basic operational metrics. Requires real admin role (course-owning
+    instructors are intentionally excluded — this is platform-wide data, not
+    scoped to a single instructor's courses).
     """
     user = get_current_user(request, db)
     if not user:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    if user.role != "admin" and getattr(user, "active_mode", "student") != "instructor":
+    if user.role != "admin":
         return JSONResponse({"error": "forbidden"}, status_code=403)
 
     try:
@@ -116,12 +118,12 @@ def operational_metrics(request: Request, db: Session = Depends(get_db)):
 def admin_analytics(request: Request, db: Session = Depends(get_db)):
     """
     Exposes complete recommendation analytics summary for admin dashboard.
-    Requires admin role or instructor mode.
+    Requires real admin role only.
     """
     user = get_current_user(request, db)
     if not user:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    if user.role != "admin" and getattr(user, "active_mode", "student") != "instructor":
+    if user.role != "admin":
         return JSONResponse({"error": "forbidden"}, status_code=403)
 
     from services.analytics import get_full_analytics_summary
@@ -132,12 +134,13 @@ def admin_analytics(request: Request, db: Session = Depends(get_db)):
 def trigger_manual_digest(request: Request, db: Session = Depends(get_db)):
     """
     Manually triggers the daily digest batch job for testing and administrative review.
-    Requires admin role or instructor mode.
+    Requires real admin role only — this sends live emails/Telegram messages to
+    every eligible user, so it must not be reachable via self-service instructor mode.
     """
     user = get_current_user(request, db)
     if not user:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    if user.role != "admin" and getattr(user, "active_mode", "student") != "instructor":
+    if user.role != "admin":
         return JSONResponse({"error": "forbidden"}, status_code=403)
 
     from services.scheduler import run_daily_digest_job
@@ -152,12 +155,12 @@ def trigger_manual_reconcile(request: Request, db: Session = Depends(get_db)):
     hourly in the background — see services/scheduler.py). Retries the Chroma/Mesh
     upsert for every product whose most recent dual-write attempt failed, so an
     admin can force-repair sync drift immediately instead of waiting for the next
-    scheduled cycle. Requires admin role or instructor mode.
+    scheduled cycle. Requires real admin role only.
     """
     user = get_current_user(request, db)
     if not user:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    if user.role != "admin" and getattr(user, "active_mode", "student") != "instructor":
+    if user.role != "admin":
         return JSONResponse({"error": "forbidden"}, status_code=403)
 
     from services.product_service import reconcile_vector_store
