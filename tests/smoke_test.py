@@ -271,6 +271,77 @@ def run_smoke_test():
     except Exception as exc:
         report_assertion("Keyword Fallback", False, f"Keyword fallback test raised exception: {exc}")
 
+    # -------------------------------------------------------------
+    # Section 8: MESH_API_KEY entirely empty -> nothing crashes, anywhere
+    # -------------------------------------------------------------
+    # Unlike Section 7 (which patches embed_text directly to simulate Mesh
+    # being down), this section removes the key itself and exercises the
+    # REAL code path: database.chroma_client._require_mesh_api_key() will
+    # genuinely raise, and services.llm_client._require_mesh_api_key() will
+    # genuinely raise. This proves the fallback is real, not just mocked.
+    print("\n[8] MESH_API_KEY Fully Empty — No Mocks, Real Fallback Path")
+    _original_mesh_key = os.environ.get("MESH_API_KEY")
+    try:
+        os.environ["MESH_API_KEY"] = ""
+
+        # 8a. Narrative generation must degrade to the generic fallback
+        # sentence instead of raising, with zero mocking of llm_client.
+        from services.llm_client import generate_narrative as _real_generate_narrative
+        narrative = _real_generate_narrative(
+            "User is exploring Data Science courses.",
+            [{"title": "Intro to Data Science", "id": 1}],
+        )
+        report_assertion(
+            "No-Mesh Narrative",
+            isinstance(narrative, str) and len(narrative) > 0,
+            "generate_narrative() with an empty MESH_API_KEY returned a non-empty "
+            "fallback string instead of raising",
+        )
+
+        # 8b. Dual-write must still commit the SQL row even though the real
+        # Chroma upsert will fail (no Mesh key -> embed_text() raises).
+        nomesh_marker = f"NoMeshMarker{int(datetime.now().timestamp())}"
+        nomesh_product = create_product(
+            db,
+            title=f"{nomesh_marker} Kubernetes Fundamentals",
+            description="Container orchestration basics.",
+            category="DevOps",
+            price=0.0,
+            level="Beginner",
+            skills="kubernetes,devops",
+        )
+        report_assertion(
+            "No-Mesh Dual-Write",
+            nomesh_product.id is not None,
+            "create_product() with an empty MESH_API_KEY still committed the SQL row "
+            "instead of crashing (Chroma upsert failed and was logged separately)",
+        )
+
+        sync_log_entry = (
+            db.query(ChromaSyncLog)
+            .filter(ChromaSyncLog.product_id == nomesh_product.id)
+            .order_by(ChromaSyncLog.id.desc())
+            .first()
+        )
+        report_assertion(
+            "No-Mesh Sync Log",
+            sync_log_entry is not None and sync_log_entry.status == "failed",
+            "the failed Chroma sync was recorded in ChromaSyncLog for visibility "
+            "(status='failed') instead of failing silently",
+        )
+
+        # cleanup — restore key before delete_product() so teardown is clean
+        os.environ["MESH_API_KEY"] = _original_mesh_key or ""
+        with patch("database.chroma_client.embed_text", return_value=[0.1] * 384):
+            delete_product(db, nomesh_product.id)
+    except Exception as exc:
+        report_assertion("No-Mesh Fallback", False, f"No-Mesh section raised an unexpected exception: {exc}")
+    finally:
+        if _original_mesh_key is None:
+            os.environ.pop("MESH_API_KEY", None)
+        else:
+            os.environ["MESH_API_KEY"] = _original_mesh_key
+
     print("\n" + "=" * 60)
     print(f" SMOKE TEST SUMMARY: {passed_count} PASSED, {failed_count} FAILED")
     print("=" * 60)

@@ -122,7 +122,13 @@ def create_product(
         )
         _record_chroma_sync_log(db, product.id, action="upsert", status="synced")
     except Exception as exc:
-        logger.error("Chroma upsert failed for product_id=%s: %s", product.id, exc)
+        logger.error(
+            "MESH FALLBACK ACTIVE: Chroma/Mesh upsert failed for product_id=%s "
+            "(likely missing/invalid MESH_API_KEY or Mesh unreachable): %s. "
+            "SQL row is already committed — product is NOT lost, it just won't "
+            "surface in semantic search until re-synced.",
+            product.id, exc,
+        )
         _record_chroma_sync_log(db, product.id, action="upsert", status="failed")
 
     logger.info("Product created: id=%s title=%r category=%s price=%.2f level=%s", product.id, product.title, product.category, product.price, product.level)
@@ -160,7 +166,13 @@ def update_product(db: Session, product_id: int, **fields) -> Optional[Product]:
         )
         _record_chroma_sync_log(db, product.id, action="upsert", status="synced")
     except Exception as exc:
-        logger.error("Chroma upsert update failed for product_id=%s: %s", product.id, exc)
+        logger.error(
+            "MESH FALLBACK ACTIVE: Chroma/Mesh upsert failed for product_id=%s during update "
+            "(likely missing/invalid MESH_API_KEY or Mesh unreachable): %s. "
+            "SQL row is already committed with the new values — only the vector "
+            "mirror is stale until re-synced.",
+            product.id, exc,
+        )
         _record_chroma_sync_log(db, product.id, action="upsert", status="failed")
 
     logger.info("Product updated: id=%s title=%r category=%s", product.id, product.title, product.category)
@@ -285,7 +297,8 @@ def semantic_search_products_scored(
         )
     except Exception as exc:
         logger.warning(
-            "Chroma/Mesh semantic search unavailable (%s) — falling back to keyword search for query=%r",
+            "MESH FALLBACK ACTIVE: Chroma/Mesh semantic search unavailable (%s) — "
+            "falling back to plain SQL keyword search (no embeddings) for query=%r",
             exc, query,
         )
         fallback_products = keyword_fallback.keyword_search_products(

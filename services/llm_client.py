@@ -3,6 +3,15 @@ services/llm_client.py — Centralized LLM Provider Abstraction & Grounded Gener
 
 All LLM calls route exclusively through the Mesh API (OpenAI-compatible).
 Configure MESH_API_KEY and MESH_BASE_URL in .env — no hardcoded secrets.
+
+DEGRADATION PATH (no silent failure): generate_narrative() wraps the entire
+Mesh call (client init, request, retries) in a single try/except. If
+MESH_API_KEY is missing, invalid, or Mesh is unreachable/rate-limited, the
+app does NOT crash — it logs the failure via record_llm_call(success=False)
+and returns a short, honest generic sentence ("Based on your recent
+activity, here are a few courses we think you'll find useful.") so the
+dashboard always renders something instead of a 500. This is a degradation,
+not a silent swap — every fallback path is logged at WARNING/ERROR level.
 """
 import os
 import json
@@ -161,7 +170,12 @@ def generate_narrative(narrative_context: str, products: List[Dict]) -> str:
 
     except Exception as exc:
         duration_ms = (time.time() - start_time) * 1000.0
-        logger.error("LLM narrative generation failed for provider=%s model=%s: %s", provider, model, exc, exc_info=True)
+        logger.error(
+            "MESH FALLBACK ACTIVE: LLM narrative generation failed for provider=%s model=%s "
+            "(likely missing/invalid MESH_API_KEY or Mesh unreachable): %s. "
+            "Serving generic fallback narrative instead of crashing.",
+            provider, model, exc, exc_info=True,
+        )
         record_llm_call(provider, model, success=False, duration_ms=duration_ms)
         return (
             "Based on your recent activity, here are a few courses we think "

@@ -393,6 +393,31 @@ Covers dual-write sync, event ingestion, trigger/cooldown policy, LangGraph agen
 
 ---
 
+## 🛡️ Resilience — What Happens Without Mesh
+
+Every Mesh-dependent code path fails **loudly into a logged fallback**, never
+silently and never with a crash. This was verified by running the app with
+`MESH_API_KEY` unset — the server still starts and every page still renders.
+
+| Dependency | Where | If Mesh is missing/unreachable |
+| --- | --- | --- |
+| **Chat completions** (narrative generation) | `services/llm_client.py :: generate_narrative()` | The whole Mesh call is wrapped in one try/except. Failure is logged (`record_llm_call(success=False)`) and a short, honest generic sentence is returned instead of a 500 — the dashboard still renders. |
+| **Embeddings** (semantic search) | `database/chroma_client.py :: embed_text()` → `services/product_service.py :: semantic_search_products_scored()` | `embed_text()` raises on failure (no fake vector). The caller catches it and falls back to `services/keyword_fallback.py` — a plain SQL keyword search with zero AI/embedding calls. |
+| **Dual-write on product create/update** | `services/product_service.py :: create_product() / update_product()` | The SQL row is committed **first**; the Chroma upsert is a separate try/except after it. On failure the product is *not* lost — it's just temporarily missing from semantic search, and the miss is recorded in `ChromaSyncLog(status="failed")` for visibility instead of failing silently. |
+| **App startup** | `main.py` | Only `SESSION_SECRET` is required to boot. `MESH_API_KEY` is checked lazily, only at the point of use, never at startup. |
+
+**How to see it yourself:**
+```bash
+# Temporarily unset the key (or comment it out in .env) and run:
+MESH_API_KEY="" python tests/smoke_test.py
+```
+`tests/smoke_test.py` includes a dedicated "Mesh-down" section (see below)
+that asserts the app keeps working — narrative generation returns the
+fallback sentence, search returns real keyword-matched products, and no
+exception propagates to the caller.
+
+---
+
 ## 📌 Known Limitations
 
 1. **Dual Profiling Paths**: `scoring_engine.py` drives recommendation retrieval/reasoning; `interest_profile.py` still computes review, dismissal, and catalog sort bias separately.

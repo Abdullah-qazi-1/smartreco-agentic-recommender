@@ -1,6 +1,17 @@
 """
 Chroma vector DB client — persistent local storage.
 Embeddings route exclusively through the Mesh API when MESH_API_KEY is configured.
+
+DEGRADATION PATH (no silent failure): embed_text() raises when MESH_API_KEY is
+missing/invalid or the Mesh embedding call fails after retries — it never
+returns a fake/zero vector. Callers do not crash, though: every caller of
+semantic search in services/product_service.py (semantic_search_products_scored)
+wraps this in a try/except and falls back to services/keyword_fallback.py, a
+plain SQL keyword search with no AI/embedding call involved. Callers of
+upsert_product() in services/product_service.py (create_product,
+update_product, delete_product) also wrap the call in try/except: on failure
+the SQL row is still saved/updated, and the miss is recorded in
+ChromaSyncLog(status="failed") for visibility instead of failing silently.
 """
 import os
 import logging
