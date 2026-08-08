@@ -8,8 +8,9 @@ from typing import Optional, List
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, asc
 
-from database.models import Product, Review, Wishlist, Enrollment, CourseLearningOutcome, ChromaSyncLog
+from database.models import Product, Review, Wishlist, Enrollment, CourseLearningOutcome, ChromaSyncLog, User
 from database import chroma_client
+from services import keyword_fallback
 from services.scoring_weights import SIMILARITY_THRESHOLD
 
 logger = logging.getLogger("smartreco.product_service")
@@ -245,9 +246,16 @@ def get_categories(db: Session):
     return [row[0] for row in rows]
 
 
-def semantic_search_products(db: Session, query: str, top_k: int = 8, category: Optional[str] = None, level: Optional[str] = None):
+def semantic_search_products(
+    db: Session,
+    query: str,
+    top_k: int = 8,
+    category: Optional[str] = None,
+    level: Optional[str] = None,
+    user: Optional[User] = None,
+):
     scored = semantic_search_products_scored(
-        db, query, top_k=top_k, category=category, level=level, min_similarity=None
+        db, query, top_k=top_k, category=category, level=level, min_similarity=None, user=user
     )
     return [p for p, _ in scored]
 
@@ -259,14 +267,32 @@ def semantic_search_products_scored(
     category: Optional[str] = None,
     level: Optional[str] = None,
     min_similarity: Optional[float] = SIMILARITY_THRESHOLD,
+    user: Optional[User] = None,
 ):
     """
     Semantic search returning (Product, similarity_score) pairs.
     When min_similarity is set, filters out weak vector matches.
+
+    If Mesh is unavailable (missing key, down, timed out, rate-limited),
+    falls back to a plain SQL keyword search (services/keyword_fallback.py —
+    no AI/embedding call involved) instead of crashing. Fallback matches get
+    a synthetic score of 1.0 so they clear any min_similarity threshold,
+    since real cosine-similarity scores aren't available in this mode.
     """
-    raw_scored = chroma_client.semantic_search_with_scores(
-        query, top_k=top_k, category=category, level=level
-    )
+    try:
+        raw_scored = chroma_client.semantic_search_with_scores(
+            query, top_k=top_k, category=category, level=level
+        )
+    except Exception as exc:
+        logger.warning(
+            "Chroma/Mesh semantic search unavailable (%s) — falling back to keyword search for query=%r",
+            exc, query,
+        )
+        fallback_products = keyword_fallback.keyword_search_products(
+            db, query, top_k=top_k, category=category, level=level, user=user
+        )
+        return [(p, 1.0) for p in fallback_products]
+
     if min_similarity is not None:
         raw_scored = [(pid, score) for pid, score in raw_scored if score >= min_similarity]
 

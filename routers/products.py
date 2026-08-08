@@ -114,7 +114,7 @@ def search_products(q: str = "", request: Request = None, db: Session = Depends(
     if not q.strip():
         products = product_service.get_all_products(db)
     else:
-        products = product_service.semantic_search_products(db, q)
+        products = product_service.semantic_search_products(db, q, user=user)
 
     return {"results": [p.to_dict() for p in products]}
 
@@ -345,4 +345,3 @@ def api_enroll(
     logger.info("User enrolled: user_id=%s product_id=%s product_title=%r", user.id, product.id, product.title)
 
     return {"enrolled": True}
-

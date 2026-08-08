@@ -37,6 +37,7 @@ os.environ.setdefault("CHROMA_PATH", tempfile.mkdtemp(prefix="smartreco_test_chr
 from database.db import SessionLocal
 from database.models import User, Product, Event, Recommendation, ChromaSyncLog
 from services.product_service import create_product, delete_product
+from services import product_service
 from database import chroma_client
 from services.trigger import should_regenerate, count_new_signal_events, MIN_SECONDS_BETWEEN_RUNS
 from services.scoring_weights import NEW_EVENTS_TRIGGER_THRESHOLD
@@ -236,6 +237,39 @@ def run_smoke_test():
             report_assertion("Cold Start", True, f"Cold start user execution completed cleanly without crashing (rec={cold_rec is not None})")
     except Exception as exc:
         report_assertion("Cold Start", False, f"Cold start test raised exception: {exc}")
+
+    # -------------------------------------------------------------
+    # Section 7: Mesh Unavailable -> Non-AI Keyword Search Fallback
+    # -------------------------------------------------------------
+    print("\n[7] Mesh-Unavailable Graceful Keyword-Search Fallback")
+    try:
+        unique_marker = f"FallbackMarker{int(datetime.now().timestamp())}"
+        fb_title = f"{unique_marker} AWS for Data Science"
+        with patch("database.chroma_client.embed_text", return_value=[0.1] * 384):
+            fb_product = create_product(
+                db,
+                title=fb_title,
+                description="Learn AWS services applied to data science workflows.",
+                category="Data Science",
+                price=0.0,
+                level="Intermediate",
+                skills="aws,data science",
+            )
+        report_assertion("Keyword Fallback", fb_product.id is not None, f"Seeded fallback-search test product ID {fb_product.id}")
+
+        # Simulate Mesh being fully down/unreachable for the search call itself.
+        with patch("database.chroma_client.semantic_search_with_scores", side_effect=RuntimeError("Mesh unreachable")):
+            results = product_service.semantic_search_products(db, unique_marker)
+            report_assertion(
+                "Keyword Fallback",
+                any(p.id == fb_product.id for p in results),
+                "semantic_search_products() did not crash when Mesh raised, and found the product via plain SQL keyword match",
+            )
+
+        with patch("database.chroma_client.embed_text", return_value=[0.1] * 384):
+            delete_product(db, fb_product.id)
+    except Exception as exc:
+        report_assertion("Keyword Fallback", False, f"Keyword fallback test raised exception: {exc}")
 
     print("\n" + "=" * 60)
     print(f" SMOKE TEST SUMMARY: {passed_count} PASSED, {failed_count} FAILED")

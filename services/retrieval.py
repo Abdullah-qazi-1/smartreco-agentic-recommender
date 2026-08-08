@@ -148,6 +148,7 @@ def _level_preferred_search(
     preferred_level: Optional[str],
     top_k: int,
     hard_level_filter: bool = False,
+    user: Optional[User] = None,
 ) -> Tuple[List[Product], float]:
     """
     Semantic search returning (products, max_similarity_score).
@@ -159,7 +160,7 @@ def _level_preferred_search(
 
     if preferred_level:
         level_matched = product_service.semantic_search_products_scored(
-            db, query_text, top_k=top_k, category=category, level=preferred_level
+            db, query_text, top_k=top_k, category=category, level=preferred_level, user=user
         )
         for product, score in level_matched:
             if score > max_score:
@@ -174,7 +175,7 @@ def _level_preferred_search(
 
     if len(results) < top_k:
         fallback = product_service.semantic_search_products_scored(
-            db, query_text, top_k=top_k * 2, category=category
+            db, query_text, top_k=top_k * 2, category=category, user=user
         )
         for product, score in fallback:
             if score > max_score:
@@ -690,7 +691,7 @@ def get_recommendation_candidates(db: Session, user: User, force_widened: bool =
         recent_titles = _recently_viewed_titles_in_category(db, user, cat)
         query_text = _build_category_query_text(cat, recent_titles)
         cat_products, max_score = _level_preferred_search(
-            db, query_text, cat, preferred_level, per_category_limit + 4, hard_level_filter=hard_level
+            db, query_text, cat, preferred_level, per_category_limit + 4, hard_level_filter=hard_level, user=user
         )
         if max_score > overall_max_similarity:
             overall_max_similarity = max_score
