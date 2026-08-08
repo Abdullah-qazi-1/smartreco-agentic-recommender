@@ -1,0 +1,69 @@
+# ==========================================
+# Environment Variables
+# ==========================================
+.env
+.env.local
+.env.development
+.env.production
+
+# Keep example env
+!.env.example
+
+# ==========================================
+# Python Cache
+# ==========================================
+__pycache__/
+*.py[cod]
+
+# ==========================================
+# Virtual Environment
+# ==========================================
+venv/
+.venv/
+env/
+
+# ==========================================
+# IDE
+# ==========================================
+.vscode/
+.idea/
+
+# ==========================================
+# OS Files
+# ==========================================
+.DS_Store
+Thumbs.db
+
+# ==========================================
+# Logs
+# ==========================================
+*.log
+
+# ==========================================
+# Pytest / Coverage
+# ==========================================
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ==========================================
+# Build
+# ==========================================
+dist/
+build/
+*.egg-info/
+
+# ==========================================
+# NOTE: smartreco.db and chroma_db/ are INTENTIONALLY
+# committed (not ignored) — pre-built embeddings + matching
+# SQLite data are shipped together to avoid re-running
+# Mesh API embedding calls on every deploy (cost control).
+# Do NOT re-add them here.
+# ==========================================
+
+# Dev/debug scripts — not part of the app
+check_events.py
+test_api.py
+test_env.py
+
+requirements.txt.bak

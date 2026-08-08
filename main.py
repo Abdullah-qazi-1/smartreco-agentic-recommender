@@ -1,0 +1,175 @@
+import os
+from fastapi import FastAPI, Request, Depends
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from fastapi.responses import RedirectResponse, HTMLResponse
+from starlette.middleware.sessions import SessionMiddleware
+from starlette.middleware.gzip import GZipMiddleware
+from sqlalchemy import inspect, text
+from sqlalchemy.orm import Session
+from dotenv import load_dotenv
+
+from database.db import Base, engine, get_db, run_migrations
+from database import models  # noqa: F401 (import ensures tables get registered)
+from database.models import Enrollment, Product
+from routers.auth import router as auth_router, get_current_user
+from routers.products import router as products_router
+from routers import events, recommendations, monitoring
+from services.activity import get_recent_activity
+from services.tracking_prefs import is_agent_tracking_enabled
+from services.rate_limit import check_rate_limit
+
+load_dotenv()
+
+_session_secret = os.getenv("SESSION_SECRET", "").strip()
+if not _session_secret:
+    raise RuntimeError(
+        "SESSION_SECRET must be set in the environment (.env). "
+        "Do not use hardcoded default secrets in production."
+    )
+
+app = FastAPI(title="SmartReco")
+
+app.add_middleware(GZipMiddleware, minimum_size=500)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=_session_secret,
+    max_age=None,
+)
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
+templates = Jinja2Templates(directory="templates")
+
+Base.metadata.create_all(bind=engine)
+run_migrations()
+
+app.include_router(events.router)
+app.include_router(recommendations.router)
+app.include_router(auth_router)
+app.include_router(products_router)
+app.include_router(monitoring.router)
+
+
+@app.middleware("http")
+async def production_middleware(request: Request, call_next):
+    limited = check_rate_limit(request)
+    if limited is not None:
+        return limited
+    response = await call_next(request)
+    if request.url.path.startswith("/static/"):
+        response.headers.setdefault("Cache-Control", "public, max-age=86400")
+    return response
+
+
+from services.scheduler import start_scheduler, shutdown_scheduler
+
+@app.on_event("startup")
+def startup_event():
+    start_scheduler()
+
+@app.on_event("shutdown")
+def shutdown_event():
+    shutdown_scheduler()
+
+@app.get("/", response_class=HTMLResponse)
+def root(request: Request):
+    if request.session.get("user_id"):
+        return RedirectResponse("/dashboard", status_code=302)
+    return RedirectResponse("/login", status_code=302)
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard(request: Request, db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+    if not user:
+        return RedirectResponse("/login", status_code=302)
+
+    tracking_enabled = is_agent_tracking_enabled(db, user, request)
+
+    enrolled_products = (
+        db.query(Product)
+        .join(Enrollment, Enrollment.product_id == Product.id)
+        .filter(Enrollment.user_id == user.id)
+        .order_by(Enrollment.created_at.desc())
+        .all()
+    )
+
+    recent_activity = get_recent_activity(db, user.id, limit=5)
+
+    return templates.TemplateResponse(
+        request,
+        "dashboard.html",
+        {
+            "user": user,
+            "active_page": "dashboard",
+            "tracking_enabled": tracking_enabled,
+            "enrolled_products": enrolled_products,
+            "recent_activity": recent_activity,
+        },
+    )
+
+
+@app.get("/my-learning", response_class=HTMLResponse)
+def my_learning(request: Request, db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+    if not user:
+        return RedirectResponse("/login", status_code=302)
+
+    tracking_enabled = is_agent_tracking_enabled(db, user, request)
+
+    enrolled_products = (
+        db.query(Product)
+        .join(Enrollment, Enrollment.product_id == Product.id)
+        .filter(Enrollment.user_id == user.id)
+        .order_by(Enrollment.created_at.desc())
+        .all()
+    )
+
+    return templates.TemplateResponse(
+        request,
+        "my-learning.html",
+        {
+            "user": user,
+            "active_page": "my_learning",
+            "tracking_enabled": tracking_enabled,
+            "enrolled_products": enrolled_products,
+        },
+    )
+
+
+@app.get("/profile", response_class=HTMLResponse)
+def profile_page(request: Request, db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+    if not user:
+        return RedirectResponse("/login", status_code=302)
+
+    tracking_enabled = is_agent_tracking_enabled(db, user, request)
+
+    return templates.TemplateResponse(
+        request,
+        "profile.html",
+        {
+            "user": user,
+            "active_page": "profile",
+            "tracking_enabled": tracking_enabled,
+        },
+    )
+
+
+@app.get("/settings", response_class=HTMLResponse)
+def settings_page(request: Request, db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+    if not user:
+        return RedirectResponse("/login", status_code=302)
+
+    tracking_enabled = is_agent_tracking_enabled(db, user, request)
+
+    return templates.TemplateResponse(
+        request,
+        "settings.html",
+        {
+            "user": user,
+            "active_page": "settings",
+            "tracking_enabled": tracking_enabled,
+        },
+    )
