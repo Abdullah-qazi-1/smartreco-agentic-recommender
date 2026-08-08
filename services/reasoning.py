@@ -8,6 +8,7 @@ Uses the same scoring_engine pipeline as get_recommendation_candidates().
 
 """
 
+import json
 from typing import Any, Dict, List
 
 
@@ -16,7 +17,7 @@ from sqlalchemy.orm import Session
 
 
 
-from database.models import User
+from database.models import Recommendation, RecommendationExplanation, User
 
 from services.retrieval import get_last_search_query
 
@@ -239,4 +240,110 @@ def build_recommendation_reasoning(
         "event_count": event_count,
 
     }
+
+
+_REASONING_FIELD_TITLE_MAP = {
+    "personalized": "Personalized",
+    "reason": "Reason",
+    "match_score": "Match Score",
+    "top_categories": "Top Categories",
+    "retrieval_categories": "Retrieval Categories",
+    "recent_search": "Recent Search",
+    "explicit_interests_used": "Explicit Interests",
+    "interest_summary": "Interest Summary",
+    "search_summary": "Search Summary",
+    "data_processing_pct": "Data Processing",
+    "event_count": "Event Count",
+}
+
+
+def save_recommendation_explanations(
+    db: Session,
+    recommendation: Recommendation,
+    reasoning: Dict[str, Any],
+) -> None:
+    """Persist structured reasoning as RecommendationExplanation rows."""
+    if not recommendation or not reasoning:
+        return
+
+    db.query(RecommendationExplanation).filter(
+        RecommendationExplanation.recommendation_id == recommendation.id
+    ).delete()
+
+    explanation_rows = []
+    for field_key, field_title in _REASONING_FIELD_TITLE_MAP.items():
+        if field_key not in reasoning:
+            continue
+        value = reasoning[field_key]
+        if value is None:
+            continue
+
+        if isinstance(value, (dict, list)):
+            description = json.dumps(value)
+        else:
+            description = str(value)
+
+        explanation_rows.append(
+            RecommendationExplanation(
+                recommendation_id=recommendation.id,
+                factor_title=field_title,
+                factor_description=description,
+            )
+        )
+
+    if explanation_rows:
+        db.add_all(explanation_rows)
+        db.commit()
+
+
+def load_stored_recommendation_reasoning(recommendation: Recommendation) -> Dict[str, Any] | None:
+    """Reconstruct stored reasoning from RecommendationExplanation rows."""
+    if not recommendation or not recommendation.explanations:
+        return None
+
+    title_to_row = {row.factor_title: row for row in recommendation.explanations}
+    if not title_to_row:
+        return None
+
+    reasoning: Dict[str, Any] = {}
+
+    def _parse_value(field_key: str, raw_value: str) -> Any:
+        if raw_value is None:
+            return None
+        if field_key in {"top_categories", "retrieval_categories", "explicit_interests_used"}:
+            try:
+                return json.loads(raw_value)
+            except (ValueError, TypeError):
+                return []
+        if field_key in {"match_score", "data_processing_pct", "event_count"}:
+            try:
+                return int(raw_value)
+            except (ValueError, TypeError):
+                return None
+        if field_key == "personalized":
+            lowered = raw_value.strip().lower()
+            if lowered in {"true", "false"}:
+                return lowered == "true"
+        return raw_value
+
+    for field_key, field_title in _REASONING_FIELD_TITLE_MAP.items():
+        row = title_to_row.get(field_title)
+        if row:
+            reasoning[field_key] = _parse_value(field_key, row.factor_description)
+
+    if not reasoning:
+        return None
+
+    if "match_score" not in reasoning:
+        reasoning["match_score"] = 65
+    if "interest_summary" not in reasoning:
+        reasoning["interest_summary"] = "Recommendations are based on your browsing and search activity."
+    if "search_summary" not in reasoning:
+        reasoning["search_summary"] = "No recent search data is available."
+    if "top_categories" not in reasoning:
+        reasoning["top_categories"] = []
+    if "data_processing_pct" not in reasoning:
+        reasoning["data_processing_pct"] = 60
+
+    return reasoning
 

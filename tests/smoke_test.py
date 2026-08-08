@@ -15,6 +15,7 @@ import os
 import sys
 import json
 import logging
+import tempfile
 from datetime import datetime, timezone, timedelta
 from unittest.mock import patch
 
@@ -22,6 +23,16 @@ from unittest.mock import patch
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
+
+# --- FIX: isolate this test run from the committed production chroma_db/ ---
+# The committed chroma_db/ holds real 1536-dim Mesh (text-embedding-3-small)
+# vectors. This test mocks embed_text() with 384-dim dummy vectors below for
+# speed (so it doesn't need a live Mesh key), and Chroma rejects any write
+# whose dimension doesn't match an existing collection's dimension. Pointing
+# CHROMA_PATH at a fresh temp directory before chroma_client is imported gives
+# the test its own throwaway collection, so the mock's 384-dim vectors never
+# collide with the real 1536-dim production collection.
+os.environ.setdefault("CHROMA_PATH", tempfile.mkdtemp(prefix="smartreco_test_chroma_"))
 
 from database.db import SessionLocal
 from database.models import User, Product, Event, Recommendation, ChromaSyncLog
