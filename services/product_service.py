@@ -6,7 +6,7 @@ import logging
 import random
 from typing import Optional, List
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, asc
+from sqlalchemy import desc, asc, func as sa_func
 
 from database.models import Product, Review, Wishlist, Enrollment, CourseLearningOutcome, ChromaSyncLog, User
 from database import chroma_client
@@ -363,3 +363,106 @@ def create_review(db: Session, product_id: int, user_id: int, reviewer_name: str
 
 def get_reviews(db: Session, product_id: int):
     return db.query(Review).filter(Review.product_id == product_id).order_by(Review.created_at.desc()).all()
+
+
+def reconcile_vector_store(db: Session, limit: Optional[int] = None) -> dict:
+    """
+    Self-healing counterpart to the dual-write try/except in create_product()
+    and update_product(): those catch a Chroma/Mesh failure and record it in
+    ChromaSyncLog(status="failed") so the product isn't lost — but on their
+    own they never go back and retry it. A course that failed to sync once
+    (e.g. Mesh was briefly down) would otherwise stay permanently invisible
+    to semantic search until someone noticed and fixed it by hand.
+
+    This function finds every product whose MOST RECENT ChromaSyncLog entry
+    has status="failed" and retries the Chroma upsert for it. It's designed
+    to be safe to call repeatedly (e.g. every hour from the scheduler, or
+    on demand from an admin endpoint):
+      - Products that resync successfully get a new "synced" log row, so the
+        next reconcile run will correctly skip them (their latest entry is
+        no longer "failed").
+      - Products that fail again just get another "failed" row and are
+        picked up on the next cycle — no product is ever silently dropped.
+      - A product deleted after its failed sync is skipped (nothing to
+        repair) rather than raising.
+
+    Returns a summary dict: {"attempted", "repaired", "still_failed",
+    "product_not_found"} — this is what the scheduler job and the admin
+    endpoint both log/return, so a run's effect is always visible.
+    """
+    # For each product_id, find the id of its most recent ChromaSyncLog row.
+    latest_log_subq = (
+        db.query(
+            ChromaSyncLog.product_id.label("product_id"),
+            sa_func.max(ChromaSyncLog.id).label("latest_id"),
+        )
+        .group_by(ChromaSyncLog.product_id)
+        .subquery()
+    )
+
+    # A product is "in need of reconciliation" only if its LATEST entry
+    # (not just any past entry) is "failed" — a later "synced" row means
+    # it already healed (e.g. via a manual admin edit) and needs no work.
+    failed_rows = (
+        db.query(ChromaSyncLog.product_id)
+        .join(
+            latest_log_subq,
+            (ChromaSyncLog.product_id == latest_log_subq.c.product_id)
+            & (ChromaSyncLog.id == latest_log_subq.c.latest_id),
+        )
+        .filter(ChromaSyncLog.status == "failed")
+        .all()
+    )
+    failed_ids = [pid for (pid,) in failed_rows]
+    if limit is not None:
+        failed_ids = failed_ids[:limit]
+
+    result = {
+        "attempted": len(failed_ids),
+        "repaired": 0,
+        "still_failed": 0,
+        "product_not_found": 0,
+    }
+
+    if not failed_ids:
+        logger.info("Reconcile: no products pending vector sync repair")
+        return result
+
+    logger.info("Reconcile: attempting to repair vector sync for %d product(s): %s", len(failed_ids), failed_ids)
+
+    for product_id in failed_ids:
+        product = db.query(Product).filter(Product.id == product_id).first()
+        if not product:
+            # Product was deleted after its failed sync — nothing left to repair.
+            result["product_not_found"] += 1
+            continue
+
+        try:
+            chroma_client.upsert_product(
+                product.id,
+                product.title,
+                product.description,
+                product.category,
+                product.level,
+                product.price,
+                product.skills,
+                product.instructor_name,
+                product.rating,
+                product.num_ratings,
+                product.enrolled_students,
+                product.duration_hours,
+            )
+            _record_chroma_sync_log(db, product.id, action="upsert", status="synced")
+            result["repaired"] += 1
+            logger.info("Reconcile: repaired vector sync for product_id=%s", product.id)
+        except Exception as exc:
+            logger.warning(
+                "MESH FALLBACK ACTIVE: Reconcile retry still failing for product_id=%s "
+                "(likely Mesh still unreachable): %s. Will retry again next cycle.",
+                product.id, exc,
+            )
+            _record_chroma_sync_log(db, product.id, action="upsert", status="failed")
+            result["still_failed"] += 1
+
+    logger.info("Reconcile completed: %s", result)
+    return result

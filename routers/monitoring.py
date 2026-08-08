@@ -144,3 +144,22 @@ def trigger_manual_digest(request: Request, db: Session = Depends(get_db)):
     summary = run_daily_digest_job()
     return {"status": "completed", "summary": summary}
 
+
+@router.post("/api/admin/reconcile-vectors")
+def trigger_manual_reconcile(request: Request, db: Session = Depends(get_db)):
+    """
+    Manually triggers the self-healing vector-store reconcile job (normally runs
+    hourly in the background — see services/scheduler.py). Retries the Chroma/Mesh
+    upsert for every product whose most recent dual-write attempt failed, so an
+    admin can force-repair sync drift immediately instead of waiting for the next
+    scheduled cycle. Requires admin role or instructor mode.
+    """
+    user = get_current_user(request, db)
+    if not user:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if user.role != "admin" and getattr(user, "active_mode", "student") != "instructor":
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+
+    from services.product_service import reconcile_vector_store
+    summary = reconcile_vector_store(db)
+    return {"status": "completed", "summary": summary}

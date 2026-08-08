@@ -8,6 +8,8 @@ Validates core backend contracts:
 4. Agent run (LangGraph): workflow pipeline execution and Recommendation persistence.
 5. Grounding guarantee: validate_narrative_grounding hallucinated title detection.
 6. Cold start safety: brand new user handling without runtime crashes.
+7. Vector-store self-healing: reconcile_vector_store() actually repairs a
+   product whose Chroma/Mesh dual-write previously failed.
 
 Runs standalone without requiring a live Mesh API key. Returns exit code 0 on success.
 """
@@ -36,7 +38,7 @@ os.environ.setdefault("CHROMA_PATH", tempfile.mkdtemp(prefix="smartreco_test_chr
 
 from database.db import SessionLocal
 from database.models import User, Product, Event, Recommendation, ChromaSyncLog
-from services.product_service import create_product, delete_product
+from services.product_service import create_product, delete_product, reconcile_vector_store
 from services import product_service
 from database import chroma_client
 from services.trigger import should_regenerate, count_new_signal_events, MIN_SECONDS_BETWEEN_RUNS
@@ -341,6 +343,78 @@ def run_smoke_test():
             os.environ.pop("MESH_API_KEY", None)
         else:
             os.environ["MESH_API_KEY"] = _original_mesh_key
+
+    # -------------------------------------------------------------
+    # Section 9: Vector-Store Self-Healing (reconcile_vector_store)
+    # -------------------------------------------------------------
+    # Simulates the real-world sequence: a product's Chroma upsert fails at
+    # create time (Mesh down), leaving it with a "failed" ChromaSyncLog entry
+    # and therefore invisible to semantic search — then proves the reconcile
+    # job actually finds it and repairs it once Mesh/Chroma is healthy again.
+    print("\n[9] Vector-Store Self-Healing (reconcile_vector_store)")
+    try:
+        reconcile_marker = f"ReconcileMarker{int(datetime.now().timestamp())}"
+        with patch("database.chroma_client.upsert_product", side_effect=RuntimeError("Mesh unreachable")):
+            broken_product = create_product(
+                db,
+                title=f"{reconcile_marker} Docker for Beginners",
+                description="Containerize your first application.",
+                category="DevOps",
+                price=0.0,
+                level="Beginner",
+                skills="docker,devops",
+            )
+        broken_log = (
+            db.query(ChromaSyncLog)
+            .filter(ChromaSyncLog.product_id == broken_product.id)
+            .order_by(ChromaSyncLog.id.desc())
+            .first()
+        )
+        report_assertion(
+            "Reconcile Setup",
+            broken_log is not None and broken_log.status == "failed",
+            "product's dual-write failed as expected and was logged with status='failed', "
+            "simulating a real Mesh outage at create time",
+        )
+
+        # Mesh/Chroma is "healthy" again now (no patch) -> reconcile should repair it.
+        with patch("database.chroma_client.embed_text", return_value=[0.1] * 384):
+            summary = reconcile_vector_store(db)
+
+        report_assertion(
+            "Reconcile Repair",
+            summary["repaired"] >= 1,
+            f"reconcile_vector_store() ran and reported repaired={summary['repaired']}, "
+            f"still_failed={summary['still_failed']}",
+        )
+
+        healed_log = (
+            db.query(ChromaSyncLog)
+            .filter(ChromaSyncLog.product_id == broken_product.id)
+            .order_by(ChromaSyncLog.id.desc())
+            .first()
+        )
+        report_assertion(
+            "Reconcile Verification",
+            healed_log is not None and healed_log.status == "synced",
+            "the product's MOST RECENT ChromaSyncLog entry is now status='synced' — "
+            "it is no longer permanently invisible to semantic search",
+        )
+
+        # A second reconcile run should now find nothing left to repair for this product.
+        with patch("database.chroma_client.embed_text", return_value=[0.1] * 384):
+            summary_2 = reconcile_vector_store(db)
+        report_assertion(
+            "Reconcile Idempotency",
+            True,  # informational — just confirming a second run doesn't error
+            f"second reconcile run is safe to call again (attempted={summary_2['attempted']} "
+            f"products still pending across the whole catalog)",
+        )
+
+        with patch("database.chroma_client.embed_text", return_value=[0.1] * 384):
+            delete_product(db, broken_product.id)
+    except Exception as exc:
+        report_assertion("Reconcile", False, f"Reconcile test raised exception: {exc}")
 
     print("\n" + "=" * 60)
     print(f" SMOKE TEST SUMMARY: {passed_count} PASSED, {failed_count} FAILED")

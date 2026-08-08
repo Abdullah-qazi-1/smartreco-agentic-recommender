@@ -91,6 +91,8 @@ SmartReco implements a **Dual-Write Pattern** across SQLite and ChromaDB for all
 
 **Why Dual-Write Exists**: Standard relational databases excel at exact filtering (category, price range, enrollment IDs) but fail at semantic context matching. ChromaDB enables semantic similarity search but lacks relational transaction capabilities. Synchronizing both on every CRUD operation guarantees instant vector search retrieval without sacrificing relational data integrity.
 
+**Self-Healing Reconciliation**: The try/except around each Chroma upsert (see the Resilience section below) only *catches and logs* a failed sync — it doesn't fix it. `services/product_service.py :: reconcile_vector_store()` is the piece that actually repairs it: it finds every product whose most recent `ChromaSyncLog` entry is `status="failed"` and retries the upsert. This runs automatically every hour via APScheduler (`services/scheduler.py :: run_vector_reconcile_job`, job id `vector_reconcile_job`, also fired once ~1 minute after boot) and can be triggered on demand at **`POST /api/admin/reconcile-vectors`**. A product that failed to sync during a transient Mesh outage is not permanently invisible to semantic search — it self-heals on the next cycle, and `tests/smoke_test.py` Section [9] proves this end-to-end (breaks a sync, then asserts the reconcile job repairs it).
+
 ---
 
 ## ✅ Features Implemented
@@ -117,6 +119,7 @@ SmartReco implements a **Dual-Write Pattern** across SQLite and ChromaDB for all
 ### d) Bonus Features (Level 6)
 - [x] **LangGraph Structured Agent Workflow**: Refactored agent pipeline into explicit `StateGraph` in `services/agent_graph.py` (`analyze` ➔ `decide` ➔ `retrieve` ➔ `evaluate` ➔ `refine` ➔ `generate`).
 - [x] **Scheduled Proactive Delivery**: `APScheduler` `BackgroundScheduler` in `services/scheduler.py` dispatching daily digests via **SMTP Email** and **Telegram Bot HTTP API**, plus manual trigger `POST /api/admin/run-digest`.
+- [x] **Scheduled Vector-Store Self-Healing**: same `BackgroundScheduler` also runs `run_vector_reconcile_job` hourly, retrying any product whose Chroma/Mesh dual-write previously failed — plus manual trigger `POST /api/admin/reconcile-vectors`.
 - [x] **LangSmith Observability**: LangChain/LangSmith tracing integration via `@traceable` decorator on LLM narrative generation.
 - [x] **Retrieval Re-Ranking**: Multi-factor re-ranking (`_rerank_search_products`) applied across primary recommendation candidate sets.
 - [x] **LLM Grounding & Hallucination Guard**: Post-generation title validation (`validate_narrative_grounding`) enforcing strict course title grounding with automatic single retry and safe fallback.
@@ -404,6 +407,7 @@ silently and never with a crash. This was verified by running the app with
 | **Chat completions** (narrative generation) | `services/llm_client.py :: generate_narrative()` | The whole Mesh call is wrapped in one try/except. Failure is logged (`record_llm_call(success=False)`) and a short, honest generic sentence is returned instead of a 500 — the dashboard still renders. |
 | **Embeddings** (semantic search) | `database/chroma_client.py :: embed_text()` → `services/product_service.py :: semantic_search_products_scored()` | `embed_text()` raises on failure (no fake vector). The caller catches it and falls back to `services/keyword_fallback.py` — a plain SQL keyword search with zero AI/embedding calls. |
 | **Dual-write on product create/update** | `services/product_service.py :: create_product() / update_product()` | The SQL row is committed **first**; the Chroma upsert is a separate try/except after it. On failure the product is *not* lost — it's just temporarily missing from semantic search, and the miss is recorded in `ChromaSyncLog(status="failed")` for visibility instead of failing silently. |
+| **Vector sync recovery** | `services/product_service.py :: reconcile_vector_store()` | The failure above is only *logged*, not fixed, on its own. This function actually retries it — runs hourly via `services/scheduler.py :: run_vector_reconcile_job` and on demand at `POST /api/admin/reconcile-vectors`, so a transient Mesh outage never leaves a product permanently unsearchable. |
 | **App startup** | `main.py` | Only `SESSION_SECRET` is required to boot. `MESH_API_KEY` is checked lazily, only at the point of use, never at startup. |
 
 **How to see it yourself:**

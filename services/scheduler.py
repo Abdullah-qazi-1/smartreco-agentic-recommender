@@ -3,6 +3,12 @@ services/scheduler.py — APScheduler Proactive Daily Digest Service.
 
 Manages scheduled daily digests sent via SMTP Email and/or Telegram Bot API.
 Runs daily at a configurable time (default 16:00) for active learners.
+
+Also runs a self-healing hourly vector-store reconcile job (see
+run_vector_reconcile_job / services.product_service.reconcile_vector_store):
+if a product's Chroma/Mesh dual-write failed at create/update time (Mesh
+down, rate-limited, etc.), that product is retried automatically on the
+next cycle instead of staying permanently missing from semantic search.
 """
 import os
 import smtplib
@@ -20,6 +26,7 @@ from database.db import SessionLocal
 from database.models import User, Event, Recommendation, Product
 from services.tracking_prefs import is_agent_tracking_enabled
 from services.agent import generate_and_save_recommendation
+from services.product_service import reconcile_vector_store
 
 logger = logging.getLogger("smartreco.scheduler")
 
@@ -232,6 +239,27 @@ def run_daily_digest_job() -> Dict[str, Any]:
     return summary
 
 
+def run_vector_reconcile_job() -> Dict[str, Any]:
+    """
+    Self-healing background job: retries any product whose Chroma/Mesh dual-write
+    previously failed (status="failed" in ChromaSyncLog). Runs hourly. See
+    services.product_service.reconcile_vector_store() for the actual repair logic —
+    this wrapper just owns the DB session lifecycle, matching run_daily_digest_job().
+    """
+    logger.info("Starting scheduled vector-store reconcile job")
+    db = SessionLocal()
+    try:
+        summary = reconcile_vector_store(db)
+    except Exception as exc:
+        logger.error("Vector reconcile job raised unexpectedly: %s", exc, exc_info=True)
+        summary = {"attempted": 0, "repaired": 0, "still_failed": 0, "product_not_found": 0, "error": str(exc)}
+    finally:
+        db.close()
+
+    logger.info("Completed scheduled vector-store reconcile job: %s", summary)
+    return summary
+
+
 def start_scheduler():
     """Initializes and starts the APScheduler BackgroundScheduler."""
     global scheduler
@@ -242,6 +270,8 @@ def start_scheduler():
     hour = int(os.getenv("DIGEST_SCHEDULE_HOUR", "16"))
     minute = int(os.getenv("DIGEST_SCHEDULE_MINUTE", "0"))
 
+    reconcile_interval_hours = int(os.getenv("VECTOR_RECONCILE_INTERVAL_HOURS", "1"))
+
     scheduler = BackgroundScheduler()
     scheduler.add_job(
         run_daily_digest_job,
@@ -251,8 +281,20 @@ def start_scheduler():
         id="daily_digest_job",
         replace_existing=True,
     )
+    scheduler.add_job(
+        run_vector_reconcile_job,
+        trigger="interval",
+        hours=reconcile_interval_hours,
+        id="vector_reconcile_job",
+        replace_existing=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=1),  # also do a first pass shortly after boot
+    )
     scheduler.start()
-    logger.info("APScheduler BackgroundScheduler started with daily digest job at %02d:%02d UTC", hour, minute)
+    logger.info(
+        "APScheduler BackgroundScheduler started: daily digest job at %02d:%02d UTC, "
+        "vector reconcile job every %d hour(s)",
+        hour, minute, reconcile_interval_hours,
+    )
 
 
 def shutdown_scheduler():
