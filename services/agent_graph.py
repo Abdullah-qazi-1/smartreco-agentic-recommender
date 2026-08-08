@@ -21,6 +21,7 @@ from services.retrieval import get_recommendation_candidates, _cold_start_result
 from services.llm_client import generate_narrative
 from services.tracking_prefs import is_agent_tracking_enabled
 from services.agent import _batch_hydrate_products, _dedupe_products, _build_main_narrative_context, _build_search_intent_narrative_context
+from services.reasoning import build_recommendation_reasoning, save_recommendation_explanations
 
 logger = logging.getLogger("smartreco.agent_graph")
 
@@ -203,6 +204,9 @@ def generate(state: AgentState) -> AgentState:
     db.add(recommendation)
     db.commit()
     db.refresh(recommendation)
+
+    reasoning = build_recommendation_reasoning(db, user, tracking_enabled=True)
+    save_recommendation_explanations(db, recommendation, reasoning)
 
     logger.info("Recommendation persisted via LangGraph pipeline: rec_id=%s user_id=%s", recommendation.id, user.id)
     state["payload"] = payload

@@ -14,7 +14,7 @@ from routers.auth import get_current_user
 from services.agent import generate_and_save_recommendation
 from services.trigger import should_regenerate
 from services.retrieval import build_search_history, build_profile_search_narrative
-from services.reasoning import build_recommendation_reasoning
+from services.reasoning import build_recommendation_reasoning, load_stored_recommendation_reasoning
 from services.tracking_prefs import is_agent_tracking_enabled
 from services.recommendation_cache import get_cached, set_cached, invalidate_user
 
@@ -35,7 +35,11 @@ def _hydrate_ids(db: Session, product_ids: list) -> list:
 
 def _build_recommendation_payload(db: Session, user, rec, tracking_enabled: bool) -> dict:
     """Assembles recommendation blocks + structured reasoning for API/UI."""
-    reasoning = build_recommendation_reasoning(db, user, tracking_enabled=tracking_enabled)
+    reasoning = None
+    if rec:
+        reasoning = load_stored_recommendation_reasoning(rec)
+    if not reasoning:
+        reasoning = build_recommendation_reasoning(db, user, tracking_enabled=tracking_enabled)
 
     if not rec:
         return {"exists": False, "reasoning": reasoning}
@@ -91,7 +95,6 @@ def ai_insights_page(request: Request, db: Session = Depends(get_db)):
     recent_search = latest_search["query"] if latest_search else None
     why_narrative = build_profile_search_narrative(user, recent_search)
     tracking_enabled = is_agent_tracking_enabled(db, user, request)
-    reasoning = build_recommendation_reasoning(db, user, tracking_enabled=tracking_enabled)
 
     rec = (
         db.query(Recommendation)
@@ -99,6 +102,12 @@ def ai_insights_page(request: Request, db: Session = Depends(get_db)):
         .order_by(Recommendation.created_at.desc())
         .first()
     )
+
+    reasoning = None
+    if rec:
+        reasoning = load_stored_recommendation_reasoning(rec)
+    if not reasoning:
+        reasoning = build_recommendation_reasoning(db, user, tracking_enabled=tracking_enabled)
 
     narrative_text = None
     picked_products = []
