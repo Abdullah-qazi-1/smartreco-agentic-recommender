@@ -67,3 +67,5 @@ test_api.py
 test_env.py
 
 requirements.txt.bak
+echo *.db-shm >> .gitignore
+echo *.db-wal >> .gitignore
