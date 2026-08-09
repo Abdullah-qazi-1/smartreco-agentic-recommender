@@ -23,7 +23,7 @@ Every product create/update/delete writes to **SQLite** (source of truth) and **
 
 **Core Platform** — email/password auth (bcrypt), session-based login, dual-mode users (student/instructor), full catalog CRUD, dual-write sync.
 
-**Behavioral Tracking** — batched + debounced client tracker, `sendBeacon` flush on tab close, bot-noise filter (<0.3s duplicate drop), scroll-depth milestones (captured client-side and persisted server-side; not yet factored into `services/scoring_weights.EVENT_BASE_WEIGHTS`, so it doesn't influence category scores yet — a scoring-design item for a future pass), opt-in/out tracking preference.
+**Behavioral Tracking** — batched + debounced client tracker, `sendBeacon` flush on tab close, bot-noise filter (<0.3s duplicate drop), scroll-depth milestones (captured client-side, persisted server-side, and factored into category scoring via `services/scoring_weights.EVENT_BASE_WEIGHTS["scroll_depth"]`), opt-in/out tracking preference.
 
 **Agentic Recommendation Engine** — multi-factor scoring engine, hybrid RAG retrieval (category + level aware), trigger-gated generation (5-event threshold + cooldown), 30s search-recommendation cache (`services/recommendation_cache.py` → `CACHE_TTL_SECONDS`).
 
@@ -169,9 +169,9 @@ Every Mesh-dependent path degrades gracefully instead of crashing or returning a
 
 Only `MESH_API_KEY` is required for the AI features to produce real (non-fallback) output — the app itself does not crash at startup or at request time without it.
 
-## 🔎 Observability — actual scope
+## 🔎 Observability
 
-`langsmith`'s `@traceable` decorator is applied to one function today: `generate_narrative()` in `services/llm_client.py` (the final LLM call in the pipeline). The other five LangGraph nodes (`analyze_activity`, `decide_retrieval`, `retrieve`, `evaluate_retrieval_quality`, `refine`) are not individually wrapped in `@traceable` yet — they're visible via the `logger.info(...)` line each node emits (`LangGraph Node [node_name] for user_id=...`), but not as separate spans in a LangSmith trace tree. Enabling `LANGCHAIN_TRACING_V2=true` + `LANGCHAIN_API_KEY` gets you a real trace of the LLM call itself; full node-by-node tracing across the whole graph is a natural next step, not yet implemented.
+`langsmith`'s `@traceable` decorator is applied to all six LangGraph nodes — `analyze_activity`, `decide_retrieval`, `retrieve`, `evaluate_retrieval_quality`, `refine`, and `generate` — plus the underlying `generate_narrative()` LLM call in `services/llm_client.py`. Enabling `LANGCHAIN_TRACING_V2=true` + `LANGCHAIN_API_KEY` (and optionally `LANGCHAIN_PROJECT`) gives a full node-by-node trace tree in LangSmith for every recommendation run — each node's input/output and timing, not just the final LLM call. If `langsmith` isn't installed, `@traceable` no-ops to a plain pass-through (same pattern as the Mesh degradation paths above), so tracing is purely additive and never a hard dependency.
 
 ## Responsible Use
 

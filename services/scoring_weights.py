@@ -56,6 +56,7 @@ EVENT_BASE_WEIGHTS = {
     "click": 0.5,
     "dismiss": -1.0,
     "enroll": 5.0,
+    "scroll_depth": 0.3,
 }
 
 # ---- Level 5 Config & Logging ----

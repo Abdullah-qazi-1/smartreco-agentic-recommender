@@ -23,6 +23,14 @@ from services.tracking_prefs import is_agent_tracking_enabled
 from services.agent import _batch_hydrate_products, _dedupe_products, _build_main_narrative_context, _build_search_intent_narrative_context
 from services.reasoning import build_recommendation_reasoning, save_recommendation_explanations
 
+try:
+    from langsmith import traceable
+except ImportError:
+    def traceable(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
+
 logger = logging.getLogger("smartreco.agent_graph")
 
 
@@ -42,6 +50,7 @@ class AgentState(TypedDict, total=False):
     recommendation: Optional[Recommendation]
 
 
+@traceable(name="analyze_activity", run_type="chain")
 def analyze_activity(state: AgentState) -> AgentState:
     """Pull and normalize user's recent events."""
     db = state["db"]
@@ -53,6 +62,7 @@ def analyze_activity(state: AgentState) -> AgentState:
     return state
 
 
+@traceable(name="decide_retrieval", run_type="chain")
 def decide_retrieval(state: AgentState) -> AgentState:
     """Gates execution based on tracking toggle and should_regenerate trigger."""
     db = state["db"]
@@ -74,6 +84,7 @@ def decide_retrieval(state: AgentState) -> AgentState:
     return state
 
 
+@traceable(name="retrieve", run_type="retriever")
 def retrieve(state: AgentState) -> AgentState:
     """Calls get_recommendation_candidates for product retrieval."""
     db = state["db"]
@@ -87,6 +98,7 @@ def retrieve(state: AgentState) -> AgentState:
     return state
 
 
+@traceable(name="evaluate_retrieval_quality", run_type="chain")
 def evaluate_retrieval_quality(state: AgentState) -> AgentState:
     """Checks candidate count and similarity quality scores."""
     candidates = state.get("candidates")
@@ -112,6 +124,7 @@ def evaluate_retrieval_quality(state: AgentState) -> AgentState:
     return state
 
 
+@traceable(name="refine", run_type="chain")
 def refine(state: AgentState) -> AgentState:
     """Widens retrieval query by relaxing filters on low quality (retried once)."""
     user = state["user"]
@@ -122,6 +135,7 @@ def refine(state: AgentState) -> AgentState:
     return state
 
 
+@traceable(name="generate", run_type="chain")
 def generate(state: AgentState) -> AgentState:
     """Generates LLM narratives, hydrates products, and persists Recommendation row."""
     db = state["db"]
