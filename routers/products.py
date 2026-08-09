@@ -136,15 +136,35 @@ def toggle_wishlist_route(
 # ---------------- Instructor / Creator Management ----------------
 
 def _can_manage_course(user: User, product: Product) -> bool:
+    """
+    SECURITY (tightened further): ownership is now decided ONLY by the real,
+    non-spoofable `instructor_id` foreign key.
+
+    - If `product.instructor_id` is set and matches the logged-in user -> allowed.
+    - If `product.instructor_id` is NULL (this only happens for the pre-existing
+      seed/demo catalog rows that were created before real user accounts existed —
+      they carry a free-text `instructor_name` like "Andrew Ng" for display only,
+      with no real account behind it) -> ONLY an admin may manage them. No student
+      or instructor-mode user can claim, edit, or delete a seed course, no matter
+      what their display name is.
+    - The previous `instructor_name`-equality fallback (added right after the
+      substring-match exploit fix) has been removed entirely. It was still based
+      on a self-reported, user-editable field (`user.name`) and was not a real
+      identity check — only the FK is trustworthy. This does not affect any
+      product created through the app today: `routers/products.py` ->
+      `api_create_product()` always stamps `instructor_id=user.id` for new
+      courses, so every course an instructor creates going forward is safely
+      theirs and untouched by this change.
+    """
     if not user or not product:
         return False
     if user.role == "admin":
         return True
+    if product.instructor_id is None:
+        # Seed/demo data with no real owner account — admin-only, by design.
+        return False
     if getattr(user, "active_mode", "student") == "instructor":
-        if product.instructor_id == user.id:
-            return True
-        if product.instructor_name and (product.instructor_name.strip().lower() in (user.name or "").strip().lower() or product.instructor_name == user.email):
-            return True
+        return product.instructor_id == user.id
     return False
 
 

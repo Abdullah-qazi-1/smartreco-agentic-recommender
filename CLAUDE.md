@@ -8,7 +8,7 @@ SmartReco is a behavioral AI recommendation platform built with FastAPI, SQLite,
 - ✅ **Level 2 — Admin CRUD & SQLite/Chroma Dual-Write** Complete
 - ✅ **Level 3 — Behavioral Event Tracking & Flush Pipeline** Complete
 - ✅ **Level 4 — AI Recommendation Agent, Profiling & Retrieval** Complete
-- ✅ **Search Debounce Optimization** Complete (450ms debounce with AbortController)
+- ✅ **Search Debounce Optimization** Complete (500ms debounce with AbortController + loading spinner during in-flight Mesh-backed search calls)
 - ✅ **Pre-Level 5 Production Cleanup & Refactoring** Complete
 
 ---

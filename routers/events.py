@@ -34,7 +34,15 @@ from services.tracking_prefs import is_agent_tracking_enabled, set_agent_trackin
 router = APIRouter()
 logger = logging.getLogger("smartreco.events")
 
-VALID_EVENT_TYPES = {"view", "search", "click", "time_spent", "dismiss", "enroll"}
+VALID_EVENT_TYPES = {"view", "search", "click", "time_spent", "dismiss", "enroll", "scroll_depth"}
+# NOTE: "scroll_depth" was added here because static/js/tracker.js has always fired
+# scroll_depth events (25/50/75/100% milestones), but they were previously silently
+# dropped at ingest since this set didn't include the type — a real data-loss bug,
+# not a design choice. They are now persisted like any other event. They are
+# intentionally NOT yet added to services/scoring_weights.EVENT_BASE_WEIGHTS — folding
+# a new signal into the interest-scoring formula is a product/tuning decision, not a
+# "make it not silently drop data" fix, so that remains a follow-up (see PROJECT.md
+# Known Limitations).
 MAX_EVENTS_PER_BATCH = 50  # safety cap — one browser batch should never be huge
 
 

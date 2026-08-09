@@ -9,7 +9,30 @@
 <div class="sr-search sr-catalog-search">
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.8"/><path d="M21 21l-4.3-4.3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
   <input type="text" id="catalogSearchInput" placeholder="Search courses, skills, or topics...">
+  <span id="searchSpinner" class="sr-search-spinner" aria-hidden="true" style="display:none;"></span>
 </div>
+
+<style>
+  /* Added: visual feedback while /api/search is in flight (that call goes through
+     Mesh for semantic re-ranking and can take a couple seconds — without this the
+     UI can look frozen). Purely additive, scoped to this element only. */
+  .sr-catalog-search { position: relative; }
+  .sr-search-spinner {
+    position: absolute;
+    right: 14px;
+    top: 50%;
+    width: 16px;
+    height: 16px;
+    margin-top: -8px;
+    border: 2px solid rgba(0, 0, 0, 0.15);
+    border-top-color: currentColor;
+    border-radius: 50%;
+    animation: sr-spin 0.7s linear infinite;
+  }
+  @keyframes sr-spin {
+    to { transform: rotate(360deg); }
+  }
+</style>
 
 <form id="filterForm" action="/catalog" method="GET">
   <div class="sr-filter-bar">
@@ -107,6 +130,8 @@
     const q = (query || '').trim();
     if (searchController) searchController.abort();
     searchController = new AbortController();
+    const spinner = document.getElementById('searchSpinner');
+    if (spinner) spinner.style.display = 'inline-block';
     try {
       const res = await fetch('/api/search?q=' + encodeURIComponent(q), {
         signal: searchController.signal,
@@ -119,11 +144,17 @@
       }
     } catch (err) {
       if (err.name !== 'AbortError') console.error('Search failed:', err);
+    } finally {
+      // Only hide the spinner if this request wasn't superseded by a newer one
+      // (an aborted request's finally still fires, but a fresh spinner show from
+      // the next runSearch() call should win — checking abort signal avoids a
+      // flicker where an old request's finally hides the new request's spinner).
+      if (spinner && !searchController.signal.aborted) spinner.style.display = 'none';
     }
   }
 
   if (searchInput) {
-    const debouncedSearch = debounce(runSearch, 1000);
+    const debouncedSearch = debounce(runSearch, 500);
     searchInput.addEventListener('input', (e) => debouncedSearch(e.target.value));
     searchInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
