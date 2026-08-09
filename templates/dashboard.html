@@ -61,7 +61,9 @@
       <a class="sr-quick-action" href="/my-learning">My Learning <span>›</span></a>
       <a class="sr-quick-action" href="/ai-insights">AI Insights <span>›</span></a>
       {% set curr_mode = user.active_mode if user and user.active_mode else (request.session.get('active_mode', 'student') if request else 'student') %}
-      {% if curr_mode == 'instructor' or (user and user.role == 'admin') %}
+      {% if user and user.role == 'admin' %}
+      <a class="sr-quick-action" href="/admin">Admin Panel <span>›</span></a>
+      {% elif curr_mode == 'instructor' %}
       <a class="sr-quick-action" href="/admin">Instructor Panel <span>›</span></a>
       {% else %}
       <button onclick="switchUserMode('instructor')" class="sr-quick-action" style="background:none; border:none; text-align:left; cursor:pointer; width:100%;">Become an Instructor <span>›</span></button>

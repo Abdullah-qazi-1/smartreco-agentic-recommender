@@ -23,7 +23,7 @@ Every product create/update/delete writes to **SQLite** (source of truth) and **
 
 **Core Platform** — email/password auth (bcrypt), session-based login, dual-mode users (student/instructor), full catalog CRUD, dual-write sync.
 
-**Behavioral Tracking** — batched + debounced client tracker, `sendBeacon` flush on tab close, bot-noise filter (<0.3s duplicate drop), scroll-depth milestones (captured client-side and now persisted server-side — see Known Limitations for the remaining scoring-integration gap), opt-in/out tracking preference.
+**Behavioral Tracking** — batched + debounced client tracker, `sendBeacon` flush on tab close, bot-noise filter (<0.3s duplicate drop), scroll-depth milestones (captured client-side and persisted server-side; not yet factored into `services/scoring_weights.EVENT_BASE_WEIGHTS`, so it doesn't influence category scores yet — a scoring-design item for a future pass), opt-in/out tracking preference.
 
 **Agentic Recommendation Engine** — multi-factor scoring engine, hybrid RAG retrieval (category + level aware), trigger-gated generation (5-event threshold + cooldown), 30s search-recommendation cache (`services/recommendation_cache.py` → `CACHE_TTL_SECONDS`).
 
@@ -154,16 +154,28 @@ New optional env vars (defaults keep local dev unchanged): `SESSION_COOKIE_SECUR
 
 ## 🛡️ Resilience — What Happens Without Mesh
 
-Every Mesh-dependent path degrades gracefully instead of crashing: narrative generation falls back to a short generic sentence, semantic search falls back to plain SQL keyword search, and a failed dual-write is logged (`ChromaSyncLog(status="failed")`) and self-heals hourly via `reconcile_vector_store()` rather than silently losing data. Only `SESSION_SECRET` is required at app startup — `MESH_API_KEY` is checked lazily at point of use. Verify it yourself: `MESH_API_KEY="" python tests/smoke_test.py`.
+Only `SESSION_SECRET` is required at app startup — `MESH_API_KEY` is checked lazily at point of use, not at boot. Verify it yourself: `MESH_API_KEY="" python tests/smoke_test.py`.
 
----
+Every Mesh-dependent path degrades gracefully instead of crashing or returning a 500:
 
-## 📌 Known Limitations
+| Dependency | If unavailable | Where |
+| --- | --- | --- |
+| Mesh chat (narrative generation) | Falls back to a short, honest generic sentence ("Based on your recent activity, here are a few courses...") instead of crashing. Every fallback is logged at `ERROR` level with the underlying exception, so it's visible in ops, not silent. | `services/llm_client.py` → `generate_narrative()` |
+| Mesh embeddings (search / retrieval) | Falls back to `services/keyword_fallback.py` — plain SQL `LIKE` matching on title/skills/category/description, ranked by title-match strength, then this user's prior time-spent on that product, then rating/popularity. No AI call involved in the fallback path. | `database/chroma_client.py` → `embed_text()`, caught by callers in `services/product_service.py` |
+| Mesh dual-write on product create/update/delete | The SQL row is still saved/updated even if the Chroma half fails; the miss is recorded in `ChromaSyncLog(status="failed")` for visibility. An hourly `run_vector_reconcile_job()` automatically retries failed syncs — see `services/product_service.reconcile_vector_store()`. | `services/scheduler.py`, `services/product_service.py` |
+| SMTP (daily digest email) | If `SMTP_HOST`/`SMTP_USER`/`SMTP_PASS` aren't fully configured, `send_email_digest()` logs and skips that user's email — the digest job continues for other users/channels instead of failing the whole batch. | `services/scheduler.py` → `send_email_digest()` |
+| Telegram (daily digest) | If `TELEGRAM_BOT_TOKEN` isn't set, `send_telegram_digest()` skips silently (logged at `DEBUG`) — same non-fatal pattern as email. | `services/scheduler.py` → `send_telegram_digest()` |
+| LangGraph (agent orchestration) | `build_recommendation_graph()` catches any import/compile failure and returns `None`; `run_recommendation_pipeline()` then runs the exact same six node functions (`analyze_activity → decide_retrieval → retrieve → evaluate_retrieval_quality → refine → generate`) as a plain sequential call instead of a compiled `StateGraph` — identical logic, no LangGraph dependency required at runtime. | `services/agent_graph.py` → `run_recommendation_pipeline()` |
 
-1. **Two Category-Profile Builders (by design, now documented)**: `services/scoring_engine.py` exposes two profile builders on purpose — `build_category_profile()` (re-queries reviews/dismissals from the DB, used for catalog sort bias in `routers/products.py`) and `build_category_profile_for_retrieval()` (scores off already-fetched, already-bot-filtered events for low-latency use inside the LangGraph pipeline, used by `services/retrieval.py` and `services/reasoning.py`). Verified during this audit: there is exactly one definition of each function in the codebase today — no duplicate/dead copy exists to remove.
-2. **Reasoning IS persisted (corrected)** — an earlier version of this note claimed reasoning summaries are only recomputed per request and never stored. That was stale: `services/agent_graph.py` → `generate()` calls `services/reasoning.py` → `save_recommendation_explanations()`, which writes rows to the `recommendation_explanations` table (`RecommendationExplanation` model). `routers/recommendations.py` reads from storage first — `load_stored_recommendation_reasoning(rec)` — and only falls back to a live `build_recommendation_reasoning()` recompute if no stored rows exist yet (e.g. for a recommendation created before this was wired up, or if explanation rows were somehow cleared).
-3. **Scroll-depth events — fixed in this pass**: `static/js/tracker.js` has always fired `scroll_depth` events at 25/50/75/100% milestones, but `routers/events.py` → `VALID_EVENT_TYPES` never included that type, so every scroll_depth event was silently dropped at ingest — a real data-loss bug, not a documented limitation. Fixed here: `scroll_depth` is now accepted and persisted like any other event. Still open: it is intentionally not yet added to `services/scoring_weights.EVENT_BASE_WEIGHTS`, so it doesn't influence category scores yet — that's a scoring-design decision for a future pass, not a data-loss bug.
-4. **`.github/workflows/smartreco-checks.yml` is not present in this working tree.** `git log` shows this file existed as of commit `7f0f338` (the hackathon auto-grading workflow: on push, it requests a GitHub OIDC token, downloads and executes a `checks.py` script from an external API using that token plus a `SUBMISSION_TOKEN` secret, and exposes `MESH_API_KEY` to that downloaded script). The file is absent from disk in this exact submission with no corresponding commit removing it — i.e. it was deleted locally without a matching git commit. If this deletion was unintentional, restore it before submitting, since it's what triggers hackathon auto-grading; if intentional, no action needed. Either way, this workflow's third-party script-download behavior was previously undocumented anywhere in this repo's docs.
+Only `MESH_API_KEY` is required for the AI features to produce real (non-fallback) output — the app itself does not crash at startup or at request time without it.
+
+## 🔎 Observability — actual scope
+
+`langsmith`'s `@traceable` decorator is applied to one function today: `generate_narrative()` in `services/llm_client.py` (the final LLM call in the pipeline). The other five LangGraph nodes (`analyze_activity`, `decide_retrieval`, `retrieve`, `evaluate_retrieval_quality`, `refine`) are not individually wrapped in `@traceable` yet — they're visible via the `logger.info(...)` line each node emits (`LangGraph Node [node_name] for user_id=...`), but not as separate spans in a LangSmith trace tree. Enabling `LANGCHAIN_TRACING_V2=true` + `LANGCHAIN_API_KEY` gets you a real trace of the LLM call itself; full node-by-node tracing across the whole graph is a natural next step, not yet implemented.
+
+## Responsible Use
+
+The agent only uses on-site behavioral signals a user generated themselves (views, searches, clicks, dwell time) — it does not infer or use protected characteristics. `services/llm_client.py`'s system prompt explicitly forbids inventing course titles, prices, instructors, or ratings not present in the retrieved catalog data, and every generated narrative is checked by `validate_narrative_grounding()` before being shown; if a generated narrative fails that check twice, the honest generic fallback is served instead. A production deployment should still add explicit tracking consent, a data export/deletion flow, and retention limits beyond what this submission implements.
 
 ---
 

@@ -237,12 +237,22 @@ def get_all_products(
 
 
 def get_instructor_courses(db: Session, user):
-    """Returns courses owned by the given instructor user."""
+    """
+    Returns courses owned by the given instructor user.
+
+    FIX: only trusts the real, non-spoofable `instructor_id` foreign key —
+    matches routers/products.py._can_manage_course(). The old fallback
+    (`instructor_name == user.name` / `== user.email`) matched on a
+    self-reported, user-editable field, so anyone could set their display
+    name to "Andrew Ng" and see (and get Edit/Delete buttons for) Andrew
+    Ng's seed courses in their own panel — a listing-vs-permission
+    inconsistency, even though the actual write was already blocked by
+    _can_manage_course(). A brand-new instructor with 0 real courses now
+    correctly sees an empty list, not someone else's seed catalog rows.
+    """
     return (
         db.query(Product)
-        .filter(
-            (Product.instructor_id == user.id) | (Product.instructor_name == user.name) | (Product.instructor_name == user.email)
-        )
+        .filter(Product.instructor_id == user.id)
         .order_by(desc(Product.created_at))
         .all()
     )

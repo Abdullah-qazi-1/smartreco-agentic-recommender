@@ -196,12 +196,27 @@ def instructor_panel(request: Request, db: Session = Depends(get_db)):
                 "total_recs": 0,
                 "total_events": 0,
                 "needs_instructor_mode": True,
+                # FIX (panel labeling): even the "not set up yet" placeholder
+                # state must not claim to be an Admin Panel for a non-admin.
+                "is_admin": False,
+                "panel_label": "Instructor Panel",
             },
         )
 
-    if user.role == "admin":
+    # FIX (panel labeling): role decides BOTH which courses load AND what the
+    # panel calls itself, so an admin never sees "Instructor Panel" over a
+    # full-catalog view, and an instructor never sees "Admin Panel" over a
+    # view that's actually scoped to just their own courses. This removes
+    # the confusion the two roles used to share a single generic title.
+    is_admin = user.role == "admin"
+
+    if is_admin:
         products = product_service.get_all_products(db)
     else:
+        # instructor mode (non-admin): ID-based ownership only — see
+        # get_instructor_courses() in services/product_service.py. A brand
+        # new instructor with 0 real courses correctly sees an empty list
+        # here, never someone else's courses.
         products = product_service.get_instructor_courses(db, user)
 
     categories = product_service.get_categories(db)
@@ -223,6 +238,8 @@ def instructor_panel(request: Request, db: Session = Depends(get_db)):
             "total_courses": total_courses_cnt,
             "total_recs": total_recs_cnt,
             "total_events": total_events_cnt,
+            "is_admin": is_admin,
+            "panel_label": "Admin Panel" if is_admin else "Instructor Panel",
         },
     )
 

@@ -1,11 +1,11 @@
 {% extends "base.html" %}
 
-{% block title %}Instructor Panel · SmartReco{% endblock %}
+{% block title %}{{ panel_label|default('Instructor Panel') }} · SmartReco{% endblock %}
 
 {% block content %}
 {% if needs_instructor_mode %}
 <div class="sr-card" style="max-width:520px;margin:48px auto;padding:28px;text-align:center;">
-  <h1 class="sr-page-title" style="margin-bottom:8px;">Instructor Panel</h1>
+  <h1 class="sr-page-title" style="margin-bottom:8px;">{{ panel_label|default('Instructor Panel') }}</h1>
   <p class="sr-page-subtitle" style="margin-bottom:20px;">
     You're browsing as a student. Switch to instructor mode to create and manage courses.
   </p>
@@ -15,10 +15,20 @@
 </div>
 {% else %}
 <header class="sr-admin-head">
-<
   <div>
-    <h1 class="sr-page-title">Instructor Panel</h1>
-    <p class="sr-page-subtitle">Manage your courses, monitor platform health, and review recommendation analytics.</p>
+    <h1 class="sr-page-title">
+      {{ panel_label }}
+      {% if is_admin %}
+        <span class="sr-role-badge sr-role-badge-admin" title="You are logged in as an admin">Admin</span>
+      {% else %}
+        <span class="sr-role-badge sr-role-badge-instructor" title="You are logged in as an instructor">Instructor</span>
+      {% endif %}
+    </h1>
+    {% if is_admin %}
+      <p class="sr-page-subtitle">You're an admin — showing every course on the platform ({{ products|length }} total), monitor platform health, and review recommendation analytics.</p>
+    {% else %}
+      <p class="sr-page-subtitle">You're an instructor — showing only courses you created ({{ products|length }} total). Other instructors' or admin-seeded courses are never listed here.</p>
+    {% endif %}
   </div>
   <button class="sr-btn sr-btn-primary sr-admin-head-cta" type="button" data-open-modal="addCourseModal">+ Add New Course</button>
 </header>
@@ -104,13 +114,15 @@
             <td>{{ p.instructor_name or user.name or 'Instructor' }}</td>
             <td>{% if p.price == 0 %}Free{% else %}${{ "%.2f"|format(p.price) }}{% endif %}</td>
             <td><span class="sr-pill sr-pill-success">● Active</span></td>
-            <td class="sr-row-actions">
-              <button type="button" aria-label="Edit {{ p.title }}" onclick="srToast('Editing {{ p.title }}')">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 20l4-1 11-11-3-3L5 16l-1 4z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
-              </button>
-              <button type="button" aria-label="Delete {{ p.title }}" onclick="deleteCourse({{ p.id }})">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-              </button>
+            <td>
+              <div class="sr-row-actions">
+                <button type="button" aria-label="Edit {{ p.title }}" onclick="srToast('Editing {{ p.title }}')">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 20l4-1 11-11-3-3L5 16l-1 4z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+                </button>
+                <button type="button" aria-label="Delete {{ p.title }}" onclick="deleteCourse({{ p.id }})">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+              </div>
             </td>
           </tr>
           {% endfor %}
