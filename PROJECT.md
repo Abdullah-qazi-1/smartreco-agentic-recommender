@@ -49,7 +49,7 @@
 | Chroma upsert on create/update | ✅ Done | `product_service.create_product()` / `update_product()` → `chroma_client.upsert_product()` |
 | Chroma delete on remove | ✅ Done | `product_service.delete_product()` → `chroma_client.delete_product()` |
 | Canonical product serializer | ✅ Done | `database/models.py` → `Product.to_dict()` |
-| Local embeddings (no LLM for vectors) | ✅ Done | `database/chroma_client.py` → `SentenceTransformer("all-MiniLM-L6-v2")` |
+| Embeddings via Mesh (mandatory provider) | ✅ Done | `database/chroma_client.py` → `embed_text()` calls Mesh's `/embeddings` endpoint (`MESH_EMBED_MODEL`, default `openai/text-embedding-3-small`) — corrected from a prior version of this table that incorrectly claimed a local `SentenceTransformer` was used; no such code exists in this repo |
 
 ---
 
@@ -148,11 +148,13 @@ A parallel legacy path remains in **`services/interest_profile.py`** (reviews, d
 
 | Requirement | Status | Proof |
 |-------------|--------|-------|
-| Provider abstraction (Groq / Mesh) | ✅ Done | `services/llm_client.py` → `get_client()`, `generate_narrative()` |
+| Mesh-only LLM client | ✅ Done | `services/llm_client.py` → `get_client()` hits `https://api.meshapi.ai/v1` only; no other provider exists in code |
 | Catalog-grounded prompt (no invented courses) | ✅ Done | System rules in `generate_narrative()`; products passed as JSON |
 | Dual narrative blocks (main + search intent) | ✅ Done | `services/agent.py` → `generate_and_save_recommendation()` |
 | Fail-soft on LLM error | ✅ Done | `generate_narrative()` returns generic fallback string |
-| Mesh API for submission | ⚠️ Partial | Code supports `LLM_PROVIDER=mesh`; default `.env.example` uses `groq` |
+| Mesh API for submission | ✅ Done | `services/llm_client.py` and `database/chroma_client.py` both call Mesh exclusively for narrative generation AND embeddings; verified live against `api.meshapi.ai` |
+
+> Note: an earlier version of this table incorrectly claimed a "Groq/Mesh provider abstraction" and marked Mesh usage as only "Partial". That was inaccurate — the code has never had a Groq code path; it has been corrected above to match `services/llm_client.py` as it actually exists.
 
 ---
 

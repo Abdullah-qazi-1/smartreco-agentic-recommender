@@ -3,7 +3,19 @@
 {% block title %}Instructor Panel · SmartReco{% endblock %}
 
 {% block content %}
+{% if needs_instructor_mode %}
+<div class="sr-card" style="max-width:520px;margin:48px auto;padding:28px;text-align:center;">
+  <h1 class="sr-page-title" style="margin-bottom:8px;">Instructor Panel</h1>
+  <p class="sr-page-subtitle" style="margin-bottom:20px;">
+    You're browsing as a student. Switch to instructor mode to create and manage courses.
+  </p>
+  <button class="sr-btn sr-btn-primary" type="button" onclick="const fd=new FormData();fd.append('mode','instructor');fetch('/api/switch-mode',{method:'POST',body:fd}).then(()=>window.location.reload())">
+    Switch to Instructor Mode
+  </button>
+</div>
+{% else %}
 <header class="sr-admin-head">
+<
   <div>
     <h1 class="sr-page-title">Instructor Panel</h1>
     <p class="sr-page-subtitle">Manage your courses, monitor platform health, and review recommendation analytics.</p>
@@ -255,6 +267,8 @@
     </form>
   </div>
 </div>
+
+{% endif %}
 {% endblock %}
 
 {% block scripts %}

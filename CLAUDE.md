@@ -1,6 +1,6 @@
 # SmartReco — Developer & Project Context (CLAUDE.md)
 
-SmartReco is a behavioral AI recommendation platform built with FastAPI, SQLite, ChromaDB, and Groq/Mesh LLM.
+SmartReco is a behavioral AI recommendation platform built with FastAPI, SQLite, ChromaDB, and the Mesh LLM/embedding API.
 
 ## Project Status
 
@@ -28,8 +28,8 @@ SmartReco is a behavioral AI recommendation platform built with FastAPI, SQLite,
 4. **Configurable Tuning & Centralized Constants**
    - Scoring weights, decay half-life (`DECAY_HALF_LIFE_DAYS`), lookback window (`EVENT_LOOKBACK_DAYS`), and retrieval thresholds live in `services/scoring_weights.py`.
 
-5. **LLM Provider Abstraction**
-   - `services/llm_client.py` handles provider switching between Groq (dev) and Mesh (prod) via the `LLM_PROVIDER` environment variable.
+5. **LLM Provider**
+   - `services/llm_client.py` and `database/chroma_client.py` route ALL narrative-generation and embedding calls exclusively through Mesh (`https://api.meshapi.ai/v1`, OpenAI-compatible). There is no other provider in the code — this doc previously (incorrectly) described a Groq/Mesh dev-vs-prod switch that never existed in `services/llm_client.py`; it has been corrected here to match the actual implementation.
 
 6. **Trigger-Gated Recommendation Generation**
    - Recommendations regenerate only when `should_regenerate(db, user)` evaluates to `True` (minimum 5 new agent-eligible signal events since last recommendation), avoiding expensive LLM calls on every request.

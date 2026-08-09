@@ -32,32 +32,31 @@ LEVELS_DURATION_RANGE = {
 }
 
 
-def _auto_enrolled_students() -> int:
-    return int(min(20000, max(45, random.lognormvariate(5.8, 1.0))))
-
-
-def _auto_rating_and_count(enrolled_students: int):
-    rating = round(min(5.0, max(3.0, random.gauss(4.3, 0.35))), 1)
-    ratio = random.triangular(0.04, 0.28, 0.12)
-    num_ratings = int(max(8, min(enrolled_students, max(10, round(enrolled_students * ratio)))))
-    return rating, num_ratings
-
-
 def _auto_duration_hours(level: str) -> float:
+    """
+    Duration is a content-shape estimate (based on course level), not a
+    trust/social-proof signal, so a randomized-within-range placeholder is
+    reasonable here when the admin/instructor doesn't provide one.
+    """
     lo, hi = LEVELS_DURATION_RANGE.get(level, (5, 15))
     return round(random.uniform(lo, hi), 1)
 
 
 def _fill_missing_stats(level, enrolled_students, rating, num_ratings, duration_hours):
+    # FIX: rating / num_ratings / enrolled_students used to be fabricated
+    # with random.gauss()/lognormvariate() whenever left blank, then fed to
+    # the LLM prompt and shown to users as if they were real social-proof
+    # numbers. That's misleading — a 4.6-star "rating" with 59 "reviews"
+    # that nobody ever left is not something we should let the AI narrative
+    # (or the UI) present as fact. We now leave these unset (None/0) when
+    # not explicitly provided, so the catalog only ever shows real numbers
+    # that came from an actual admin/instructor input or real Review rows.
     if enrolled_students is None:
-        enrolled_students = _auto_enrolled_students()
-
-    if rating is None or num_ratings is None:
-        auto_rating, auto_count = _auto_rating_and_count(enrolled_students)
-        if rating is None:
-            rating = auto_rating
-        if num_ratings is None:
-            num_ratings = auto_count
+        enrolled_students = 0
+    if rating is None:
+        rating = None
+    if num_ratings is None:
+        num_ratings = 0
 
     if duration_hours is None:
         duration_hours = _auto_duration_hours(level)

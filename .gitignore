@@ -54,12 +54,23 @@ build/
 *.egg-info/
 
 # ==========================================
-# NOTE: smartreco.db and chroma_db/ are INTENTIONALLY
-# committed (not ignored) — pre-built embeddings + matching
-# SQLite data are shipped together to avoid re-running
-# Mesh API embedding calls on every deploy (cost control).
-# Do NOT re-add them here.
+# Database
+# FIX: smartreco.db was previously committed on purpose ("cost control"),
+# but it contains real bcrypt password hashes for real-looking accounts
+# and leftover test-run rows. Shipping real credential hashes in a PUBLIC
+# repo is a security issue, so the SQL database is now ignored. Use
+# `python tools/create_tables.py` + `python seed_data.py` (or
+# `python create_admin.py`) to bootstrap a fresh local DB instead.
+#
+# NOTE: chroma_db/ (the vector store / embeddings) is INTENTIONALLY still
+# committed and NOT ignored — it holds only product embeddings + catalog
+# metadata (no user credentials or PII), and re-generating it means paying
+# for Mesh embedding calls again. Do NOT add chroma_db/ here.
 # ==========================================
+*.db
+*.db-wal
+*.db-shm
+*.sqlite3
 
 # Dev/debug scripts — not part of the app
 check_events.py

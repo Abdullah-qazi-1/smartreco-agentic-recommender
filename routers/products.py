@@ -149,16 +149,35 @@ def _can_manage_course(user: User, product: Product) -> bool:
 
 
 @router.get("/admin", response_class=HTMLResponse)
+@router.get("/admin", response_class=HTMLResponse)
 def instructor_panel(request: Request, db: Session = Depends(get_db)):
     user = get_current_user(request, db)
     if not user:
         return RedirectResponse("/login", status_code=302)
 
-    # If user is in student mode, redirect to switch or admin
+    # SECURITY FIX: this used to silently flip active_mode to "instructor"
+    # and persist it to the DB just because the user visited /admin — that
+    # granted course-management access with zero explicit consent. Now we
+    # only show the panel to users who are already admin or already in
+    # instructor mode (set explicitly via the existing /switch-mode route);
+    # everyone else is bounced with an explanation instead of being
+    # auto-upgraded.
     if getattr(user, "active_mode", "student") != "instructor" and user.role != "admin":
-        user.active_mode = "instructor"
-        request.session["active_mode"] = "instructor"
-        db.commit()
+        return templates.TemplateResponse(
+            request,
+            "admin.html",
+            {
+                "user": user,
+                "active_page": "admin",
+                "products": [],
+                "categories": [],
+                "total_users": 0,
+                "total_courses": 0,
+                "total_recs": 0,
+                "total_events": 0,
+                "needs_instructor_mode": True,
+            },
+        )
 
     if user.role == "admin":
         products = product_service.get_all_products(db)
@@ -207,6 +226,15 @@ def api_create_product(
     user = get_current_user(request, db)
     if not user:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    # SECURITY FIX: previously ANY logged-in user (even plain "student" role,
+    # never switched to instructor mode) could create catalog products via
+    # this endpoint — there was no role/mode check at all. Only an admin, or
+    # a user actively in instructor mode, may add courses now. This matches
+    # the check already enforced on update/delete (_can_manage_course).
+    is_instructor_mode = getattr(user, "active_mode", "student") == "instructor"
+    if user.role != "admin" and not is_instructor_mode:
+        return JSONResponse({"error": "forbidden"}, status_code=403)
 
     ins_name = instructor_name.strip() if instructor_name else (user.name or user.email.split("@")[0])
 

@@ -54,7 +54,7 @@
     </div>
     <h3 class="sr-course-title">{{ p.title }}</h3>
     <p class="sr-course-instructor">{{ p.instructor_name or 'SmartReco Instructor' }}</p>
-    <div class="sr-course-rating">★ {{ "%.1f"|format(p.rating or 4.8) }} ({{ p.num_ratings or 120 }})</div>
+    <div class="sr-course-rating">{% if p.rating %}★ {{ "%.1f"|format(p.rating) }} ({{ p.num_ratings or 0 }}){% else %}New — no ratings yet{% endif %}</div>
     <div class="sr-chip-row">
       {% if p.skills %}
         {% for skill in p.skills.split(',')[:3] %}
@@ -94,7 +94,7 @@
         </div>
         <h3 class="sr-course-title">${p.title}</h3>
         <p class="sr-course-instructor">${p.instructor_name || 'SmartReco Instructor'}</p>
-        <div class="sr-course-rating">★ ${p.rating ? p.rating.toFixed(1) : '4.8'} (${p.num_ratings || 120})</div>
+        <div class="sr-course-rating">${p.rating ? ('★ ' + p.rating.toFixed(1) + ' (' + (p.num_ratings || 0) + ')') : 'New — no ratings yet'}</div>
         <div class="sr-course-card-foot">
           <span class="sr-price ${p.price === 0 ? 'sr-price-free' : ''}">${p.price === 0 ? 'Free' : '$' + p.price.toFixed(2)}</span>
           <span class="sr-btn sr-btn-secondary sr-btn-sm">View Details</span>
