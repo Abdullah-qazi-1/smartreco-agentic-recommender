@@ -43,6 +43,7 @@ smartreco/
 ├── templates/      # Jinja2 pages (dashboard, catalog, admin, ai-insights, ...)
 ├── tests/          # smoke_test.py
 ├── scripts/        # eval_recommendations.py
+├── .github/workflows/  # smartreco-checks.yml (hackathon auto-grading CI)
 ├── main.py, create_admin.py, seed_data.py, resync_chroma.py
 └── requirements.txt, .env.example
 ```
@@ -79,7 +80,16 @@ uvicorn main:app --reload --port 8000   # → http://localhost:8000
 
 > **Note:** `chroma_db/` and `smartreco.db` are shipped **pre-built** (seeded catalog + embeddings) to avoid re-running Mesh embedding calls on every clone. If both are already present, skip seeding entirely. Only run `python seed_data.py && python create_admin.py` if starting from a genuinely empty database. If SQLite/Chroma ever drift, resync with `python resync_chroma.py`.
 
-**Required env vars:** `SESSION_SECRET`, `MESH_API_KEY` (+ optional `MESH_MODEL`, `MESH_EMBED_MODEL`, `MESH_BASE_URL`). **Optional:** LangSmith (`LANGCHAIN_*`), digest delivery (`SMTP_*`, `TELEGRAM_*`), and the new security knobs below. Full list with defaults is in `.env.example`.
+**Required env vars:** `SESSION_SECRET`, `MESH_API_KEY` (+ optional `MESH_MODEL`, `MESH_EMBED_MODEL`, `MESH_BASE_URL`). **Optional:** LangSmith (`LANGCHAIN_*`), digest delivery (`SMTP_*`, `TELEGRAM_*`), and the security knobs below. Full list with defaults is in `.env.example`.
+
+### CI / Automated Checks
+
+`.github/workflows/smartreco-checks.yml` is present and configured for the SmartReco Build Challenge auto-grading pipeline. It runs on every push to `main` and requires two repository secrets set under **Settings → Secrets and variables → Actions**:
+
+- `MESH_API_KEY` — your Mesh API key
+- `SUBMISSION_TOKEN` — your submission token from the challenge dashboard
+
+Results appear under the repo's **Actions** tab.
 
 ---
 
@@ -88,7 +98,7 @@ uvicorn main:app --reload --port 8000   # → http://localhost:8000
 ### 1. Mathematical Scoring Engine (`services/scoring_engine.py`)
 SmartReco calculates per-category interest scores using a composite scoring formula:
 
-- **Base Weights**: `enroll` (5.0), `search` (3.0), `view` (1.0), `time_spent` (1.0), `click` (0.5), `dismiss` (-1.0).
+- **Base Weights**: `enroll` (5.0), `search` (3.0), `view` (1.0), `time_spent` (1.0), `click` (0.5), `dismiss` (-1.0), `scroll_depth` (see `EVENT_BASE_WEIGHTS`).
 - **Recency Decay**: Exponential decay with a 7-day half-life: $w_{recency} = 0.5^{\frac{\text{days\_ago}}{7}}$.
 - **Dwell-Time Multiplier**: View events are scaled by dwell time:
   - `< 5s`: `0.2×` (quick bounce)
@@ -136,14 +146,14 @@ To test the daily digest without waiting for the scheduled hour: `POST /api/admi
 
 ---
 
-## 🔒 Security — Recent Hardening (Latest Update)
+## 🔒 Security — Recent Hardening
 
 A security review found and fixed the following. All 25 `smoke_test.py` assertions plus a dedicated live login-flow regression test (signup → login → wrong password → logout → re-login → rate-limit) pass after these changes — **no existing functionality was affected.**
 
 | Issue | Fix |
 | :--- | :--- |
 | **Privilege escalation**: `/metrics`, `/api/analytics`, `/api/admin/run-digest`, `/api/admin/reconcile-vectors` accepted `role=="admin"` **OR** `active_mode=="instructor"` — and any user can self-switch to instructor mode via `POST /api/switch-mode` (by design, for course-management). This let any regular user reach admin-only operations. | `routers/monitoring.py` now requires `role=="admin"` only on all four routes. Live-verified: unauthenticated → 401, authenticated non-admin (student and instructor mode alike) → 403 on all four. |
-| **Course-ownership spoofing** (found in this audit pass, not a prior known issue): `routers/products.py` → `_can_manage_course()` granted edit/delete rights on ANY course if `product.instructor_name` was a *substring* of the logged-in user's self-reported `user.name` — e.g. signing up as "Andrew Ng Fan Page" passed the check for courses owned by "Andrew Ng". Live-exploited during this audit: a spoofed account successfully overwrote another instructor's course title via `PUT /api/products/{id}`. | Tightened twice: first to exact name equality, then — since a self-reported field is never a real identity check — the name-matching fallback was removed entirely. Ownership is now `product.instructor_id == user.id` only, the real foreign key. Seed/demo courses (`instructor_id IS NULL`) can only be managed by an admin now, regardless of the requester's display name. Every course created through the app is stamped with the creator's real `instructor_id` at creation time, so real instructors keep full control of their own courses. Re-verified live: the spoofed account now gets `403 forbidden`. This was a pure permission-logic change — no database rows, embeddings, or Chroma vectors were touched. |
+| **Course-ownership spoofing**: `routers/products.py` → `_can_manage_course()` granted edit/delete rights on ANY course if `product.instructor_name` was a *substring* of the logged-in user's self-reported `user.name` — e.g. signing up as "Andrew Ng Fan Page" passed the check for courses owned by "Andrew Ng". | Tightened to exact ownership check: `product.instructor_id == user.id` only, the real foreign key. Seed/demo courses (`instructor_id IS NULL`) can only be managed by an admin now, regardless of display name. Re-verified live: a spoofed account now gets `403 forbidden`. |
 | **No rate-limiting on `/login` or `/signup`** — unlimited password-guessing was possible. | Added to `services/rate_limit.py`: `/login` (10 req/60s), `/signup` (5 req/60s). Normal users retrying a typo are never affected. |
 | **Rate limiter trusted `X-Forwarded-For` unconditionally** — a client-supplied header, trivially spoofable to bypass IP-based limits. | Now only trusted if `TRUST_PROXY_HEADERS=true` is explicitly set (for real deployments behind a reverse proxy); defaults to the real socket peer address. |
 | **Session cookie never expired, no `https_only` control.** | Added `SESSION_MAX_AGE_SECONDS` (default 7 days) and `SESSION_COOKIE_SECURE` env var (set `true` once deployed behind HTTPS). |
