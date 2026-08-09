@@ -25,7 +25,7 @@ Every product create/update/delete writes to **SQLite** (source of truth) and **
 
 **Behavioral Tracking** — batched + debounced client tracker, `sendBeacon` flush on tab close, bot-noise filter (<0.3s duplicate drop), scroll-depth milestones, opt-in/out tracking preference.
 
-**Agentic Recommendation Engine** — multi-factor scoring engine, hybrid RAG retrieval (category + level aware), trigger-gated generation (5-event threshold + cooldown), 24h search-recommendation cache.
+**Agentic Recommendation Engine** — multi-factor scoring engine, hybrid RAG retrieval (category + level aware), trigger-gated generation (5-event threshold + cooldown), 30s search-recommendation cache (`services/recommendation_cache.py` → `CACHE_TTL_SECONDS`).
 
 **Bonus (Level 6)** — LangGraph structured agent ✅ · scheduled daily digest via real cron (APScheduler, email + Telegram) ✅ · scheduled vector self-healing ✅ · LangSmith tracing ✅ · retrieval re-ranking ✅ · LLM grounding/hallucination guard ✅.
 
@@ -100,7 +100,7 @@ SmartReco calculates per-category interest scores using a composite scoring form
 - **Conflicting Interest 3× Dominance Rule**: If the top category score is $> 3\times$ the second category score, retrieval isolates the dominant category. Otherwise, the engine blends candidates from the top 2 categories.
 
 ### 2. Trigger & Caching (`services/trigger.py`)
-`should_regenerate(db, user)` only fires the agent once 5+ new signal events have accumulated since the last recommendation, plus a cooldown window — no LLM call per click. Search recommendations are cached in-memory (24h TTL).
+`should_regenerate(db, user)` only fires the agent once 5+ new signal events have accumulated since the last recommendation, plus a cooldown window — no LLM call per click. Search recommendations are cached in-memory (30s TTL, `services/recommendation_cache.py` → `CACHE_TTL_SECONDS`).
 
 ### 3. LangGraph Nodes (`services/agent_graph.py`)
 ```
@@ -160,7 +160,7 @@ Every Mesh-dependent path degrades gracefully instead of crashing: narrative gen
 ## 📌 Known Limitations
 
 1. **Two Category-Profile Builders (by design, now documented)**: `services/scoring_engine.py` exposes two profile builders on purpose — `build_category_profile()` (re-queries reviews/dismissals from the DB, used for catalog sort bias in `routers/products.py`) and `build_category_profile_for_retrieval()` (scores off already-fetched, already-bot-filtered events for low-latency use inside the LangGraph pipeline, used by `services/retrieval.py` and `services/reasoning.py`). An earlier duplicate, dead definition of `build_category_profile_for_retrieval()` (shadowed and never actually called) has been removed; see the docstring on that function for the rationale behind keeping two paths.
-2. **Transient Reasoning Cards**: Reasoning summaries are recomputed dynamically per request for AI Insights cards and are not stored permanently in the `Recommendation` table.
+2. **Reasoning IS persisted (corrected)** — an earlier version of this note claimed reasoning summaries are only recomputed per request and never stored. That was stale: `services/agent_graph.py` → `generate()` calls `services/reasoning.py` → `save_recommendation_explanations()`, which writes rows to the `recommendation_explanations` table (`RecommendationExplanation` model). `routers/recommendations.py` reads from storage first — `load_stored_recommendation_reasoning(rec)` — and only falls back to a live `build_recommendation_reasoning()` recompute if no stored rows exist yet (e.g. for a recommendation created before this was wired up, or if explanation rows were somehow cleared).
 
 ---
 
