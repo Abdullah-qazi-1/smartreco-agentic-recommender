@@ -17,7 +17,7 @@
 | RAG retrieval + LLM narrative | ✅ Complete |
 | Caching / trigger logic | ✅ Complete |
 | UI wiring (dashboard, AI Insights, profile, settings) | ✅ Complete |
-| Bonus (LangGraph, scheduler, LangSmith) | ❌ Not implemented |
+| Bonus (LangGraph, scheduler, LangSmith) | ✅ Complete — see §11 |
 
 ---
 
@@ -138,7 +138,7 @@ A parallel legacy path remains in **`services/interest_profile.py`** (reviews, d
 | Cross-field search-intent bridge | ✅ Done | `_search_intent_branch()` |
 | Search history (1 pick per past search) | ✅ Done | `build_search_history()` → `{latest, sidebar}` |
 | Search result re-ranking | ✅ Done | `_rerank_search_products()`, `_product_profile_overlap_score()` |
-| In-memory search cache (24 h) | ✅ Done | `_search_recommendation_cache` in `retrieval.py` |
+| In-memory search cache (30 s) | ✅ Done | `_search_recommendation_cache` in `retrieval.py`; TTL is `CACHE_TTL_SECONDS = 30` in `services/recommendation_cache.py` — corrected from a prior version of this table that said "24 h" |
 | Low-confidence vector fallback | ✅ Done | `get_recommendation_candidates()` → `_cold_start_result(..., low_confidence=True)` when &lt;2 products pass similarity filter |
 | Diversify / rotate recommendations | ✅ Done | `scoring_engine.diversify()` in `get_recommendation_candidates()` |
 
@@ -168,7 +168,7 @@ A parallel legacy path remains in **`services/interest_profile.py`** (reviews, d
 | Force refresh button | ✅ Done | `POST /api/recommendations/refresh`; wired in `templates/ai-insights.html` |
 | Background trigger after event batch | ✅ Done | `routers/events.py` → `BackgroundTasks` → `_run_recommendation_check()` |
 | Persist recommendation in DB | ✅ Done | `Recommendation` model; `agent.py` saves JSON narrative + product_ids |
-| Structured `reasoning` persisted | ❌ Not implemented | `reasoning` built on-the-fly in `build_recommendation_reasoning()` — not stored in `Recommendation` row |
+| Structured `reasoning` persisted | ✅ Done | `services/agent_graph.py` → `generate()` calls `save_recommendation_explanations()`, writing rows to `recommendation_explanations` table (`database/models.py` → `RecommendationExplanation`) — corrected from a prior version of this table that said "Not implemented" |
 
 ---
 
@@ -248,11 +248,13 @@ A parallel legacy path remains in **`services/interest_profile.py`** (reviews, d
 
 ## Known Limitations / TODOs
 
-1. **Dual profiling paths** — `scoring_engine.py` drives retrieval/reasoning; `interest_profile.py` still handles reviews, dismissals, and catalog sort bias separately.
-2. **Throttle helper only** — `throttle()` exists in `debounce.js` but no scroll-depth signal is wired yet.
-3. **Reasoning not persisted** — Recomputed each request; not stored in `Recommendation` row.
-4. **Level 6 bonuses** — LangGraph, APScheduler digest, LangSmith: not started (see §11).
-5. **Force refresh when tracking off** — Returns 403 `tracking_disabled` from `/api/recommendations/refresh`.
+1. **Dual profiling paths** — `scoring_engine.py` drives retrieval/reasoning; `interest_profile.py` still handles reviews, dismissals, and catalog sort bias separately. Intentional split, not a bug: `scoring_engine.py` owns the recommendation-affecting interest score, `interest_profile.py` owns lighter-weight UI concerns (catalog sort bias, review/dismissal bookkeeping) that don't need the full recency/decay math. Not consolidated because merging them would couple UI sort order to the same cooldown/threshold logic that gates LLM calls — not worth the coupling for a cosmetic feature.
+2. **Scroll-depth events dropped server-side** — `static/js/tracker.js` throttles scroll and pushes `scroll_depth` events client-side, but `routers/events.py` → `VALID_EVENT_TYPES` does not include `"scroll_depth"`, so these are silently discarded on ingest today. Tracked as a real gap, not fixed in this submission — closing it is a one-line addition to `VALID_EVENT_TYPES` plus deciding how `scroll_depth` should weight into `scoring_engine.py`.
+3. **Reasoning IS persisted** — corrected from a prior version of this table that claimed otherwise. `services/agent_graph.py` → `generate()` calls `save_recommendation_explanations()`, which writes rows to the `recommendation_explanations` table (`database/models.py` → `RecommendationExplanation`, linked via `Recommendation.explanations`). Confirmed by reading the code path end-to-end; the earlier claim was stale documentation, not a redaction of a real gap.
+4. **Level 6 bonuses ARE implemented** — corrected from a prior version of this table that claimed "not started." LangGraph (`services/agent_graph.py`, real `StateGraph` with 6 nodes), APScheduler daily digest + hourly vector reconcile (`services/scheduler.py`, started at boot in `main.py`), and LangSmith tracing (`@traceable` in `services/llm_client.py`) are all present and wired — see §11 for file-level proof. This summary table previously lagged behind §11 and the actual code; §11 was always correct.
+5. **LangSmith tracing wiring not independently confirmed firing** — the `@traceable` decorator is correctly applied and gracefully no-ops if `LANGCHAIN_API_KEY`/`LANGCHAIN_TRACING_V2` aren't set (see `services/llm_client.py` import fallback), but nobody has yet run this with a live LangSmith key and confirmed a trace lands in the `smith.langchain.com` project dashboard. To close this gap: set `LANGCHAIN_TRACING_V2=true` + a real `LANGCHAIN_API_KEY` in `.env`, trigger a recommendation refresh, and screenshot the resulting trace in the `smartreco` project — see the Testing section below.
+6. **Cache TTL — docs previously said 24h, code says 30s** — `services/recommendation_cache.py` → `CACHE_TTL_SECONDS = 30`. Corrected here; the README's "24h TTL" claim was wrong and has been fixed to match the code (see README Features section). 30s is intentional for a demo/hackathon context (cache invalidates fast enough to see fresh behavior while testing) — if this ships for real use, revisit the constant based on actual traffic patterns.
+7. **Force refresh when tracking off** — Returns 403 `tracking_disabled` from `/api/recommendations/refresh`.
 
 ---
 
